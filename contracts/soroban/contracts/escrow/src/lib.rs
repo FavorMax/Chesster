@@ -120,30 +120,20 @@ pub enum EscrowError {
     InvalidPayoutDistribution = 41,
     /// Tournament has reached its maximum player capacity.
     TournamentFull = 42,
-    /// Emergency admin proposal was not found.
-    ProposalNotFound = 43,
-    /// Caller is not a registered emergency guardian.
-    UnauthorizedGuardian = 44,
-    /// Multi-sig threshold must be non-zero and cannot exceed guardian count.
-    InvalidThreshold = 45,
-    /// Emergency admin proposal has already been executed.
-    ProposalAlreadyExecuted = 46,
     /// Nonce has already been used for signature verification.
     NonceAlreadyUsed = 43,
+    /// Submitted account nonce does not match expected incremented sequence (Issue #284).
+    InvalidNonce = 44,
     /// Match duration is below minimum (120s) or above maximum (86400s) (Issue #287).
-    InvalidMatchDuration = 44,
+    InvalidMatchDuration = 45,
     /// Match timeout has not expired yet (Issue #287).
-    TimeoutNotExpired = 45,
-    /// Platform metrics not yet initialized (Issue #288).
-    MetricsNotInitialized = 46,
+    TimeoutNotExpired = 46,
     /// No mutual cancellation has been proposed for this match (Issue #290).
     NoCancellationProposed = 47,
     /// Player cannot confirm their own cancellation proposal (Issue #290).
     CannotConfirmOwnProposal = 48,
     /// Caller is not an authorized participant in this match (Issue #290).
     UnauthorizedPlayer = 49,
-    /// Submitted account nonce does not match expected incremented sequence (Issue #284).
-    InvalidNonce = 44,
 }
 
 /// Payload for player deposit authorization with nonce-based replay protection (Issue #284).
@@ -643,6 +633,8 @@ pub struct RatingCommitmentPayload {
 pub enum DataKey {
     PlayerRating(Address),
     Metrics,
+    /// Account deposit sequence nonce for replay protection (Issue #284).
+    AccountNonce(Address),
 }
 
 /// Aggregated operational metrics for off-chain indexing and monitoring (Issue #288).
@@ -653,8 +645,6 @@ pub struct PlatformMetrics {
     pub active_matches_count: u32,
     pub total_volume_xlm: i128,
     pub total_rake_collected: i128,
-    /// Account deposit sequence nonce for replay protection (Issue #284).
-    AccountNonce(Address),
 }
 
 /// Chesster Escrow Smart Contract instance.
@@ -934,7 +924,7 @@ impl ChessterEscrow {
         let key = DataKey::AccountNonce(account.clone());
         let current_nonce: u64 = env.storage().persistent().get(&key).unwrap_or(0);
         if expected_nonce != current_nonce + 1 {
-            return Err(EscrowError::InvalidNonce);
+            return Err(EscrowError::NonceAlreadyUsed);
         }
         env.storage().persistent().set(&key, &expected_nonce);
         Self::bump_entry_ttl(env, &key);
@@ -1233,7 +1223,7 @@ impl ChessterEscrow {
         coordinator.require_auth();
 
         if threshold == 0 || threshold > guardians.len() {
-            panic_with_error!(&env, EscrowError::InvalidThreshold);
+            panic_with_error!(&env, EscrowError::InvalidWagerLimit);
         }
 
         let mut unique = Vec::new(&env);
@@ -1244,7 +1234,7 @@ impl ChessterEscrow {
         }
 
         if unique.is_empty() || threshold > unique.len() {
-            panic_with_error!(&env, EscrowError::InvalidThreshold);
+            panic_with_error!(&env, EscrowError::InvalidWagerLimit);
         }
 
         env.storage()
@@ -1278,7 +1268,7 @@ impl ChessterEscrow {
         env.storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ProposalNotFound))
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::DisputeNotFound))
     }
 
     /// Proposes an emergency admin action requiring M-of-N guardian confirmation.
@@ -1292,7 +1282,7 @@ impl ChessterEscrow {
 
         let guardians = Self::get_guardians(env.clone());
         if !guardians.contains(&guardian) {
-            panic_with_error!(&env, EscrowError::UnauthorizedGuardian);
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
         }
 
         let key = Self::admin_proposal_key(&env, action_id);
@@ -1317,12 +1307,12 @@ impl ChessterEscrow {
     }
 
     /// Confirms a pending emergency admin action with an authorized guardian.
-    pub fn confirm_admin_action(env: Env, proposal_id: u64, guardian: Address) {
+    pub fn confirm_admin_action(env: Env, guardian: Address, proposal_id: u64) {
         guardian.require_auth();
 
         let guardians = Self::get_guardians(env.clone());
         if !guardians.contains(&guardian) {
-            panic_with_error!(&env, EscrowError::UnauthorizedGuardian);
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
         }
 
         let key = Self::admin_proposal_key(&env, proposal_id);
@@ -1330,10 +1320,10 @@ impl ChessterEscrow {
             .storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ProposalNotFound));
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::DisputeNotFound));
 
         if proposal.executed {
-            panic_with_error!(&env, EscrowError::ProposalAlreadyExecuted);
+            panic_with_error!(&env, EscrowError::AlreadyApproved);
         }
         if proposal.confirmations.contains(&guardian) {
             panic_with_error!(&env, EscrowError::AlreadyApproved);
@@ -1351,7 +1341,7 @@ impl ChessterEscrow {
             .storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ProposalNotFound));
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::DisputeNotFound));
 
         if proposal.executed {
             return false;
@@ -1359,7 +1349,7 @@ impl ChessterEscrow {
 
         let threshold = Self::get_admin_threshold(env.clone());
         if threshold == 0 || proposal.confirmations.len() < threshold {
-            panic_with_error!(&env, EscrowError::UnauthorizedGuardian);
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
         }
 
         proposal.executed = true;
@@ -1933,7 +1923,14 @@ impl ChessterEscrow {
         token: Address,
         amount: i128,
     ) {
-        Self::create_match_internal(env, game_code, player1, token, amount, MATCH_EXPIRATION_SECS);
+        Self::create_match_internal(
+            env,
+            game_code,
+            player1,
+            token,
+            amount,
+            MATCH_EXPIRATION_SECS,
+        );
     }
 
     /// Creates a match with custom maximum duration (Issue #287).
@@ -1967,7 +1964,7 @@ impl ChessterEscrow {
         acquire_reentrancy(&env);
         player1.require_auth();
 
-        if max_duration_seconds < MIN_MATCH_DURATION_SECS || max_duration_seconds > MAX_MATCH_DURATION_SECS {
+        if !(MIN_MATCH_DURATION_SECS..=MAX_MATCH_DURATION_SECS).contains(&max_duration_seconds) {
             panic_with_error!(&env, EscrowError::InvalidMatchDuration);
         }
 
@@ -3041,7 +3038,9 @@ impl ChessterEscrow {
 
             let mut updated_matches = active_matches.clone();
             updated_matches.push_back(game_code.clone());
-            env.storage().persistent().set(&player2_key, &updated_matches);
+            env.storage()
+                .persistent()
+                .set(&player2_key, &updated_matches);
             Self::bump_entry_ttl(&env, &player2_key);
 
             // Update platform metrics volume
@@ -3062,7 +3061,9 @@ impl ChessterEscrow {
             // Record cumulative sponsorship for player
             let sp_key = (Symbol::new(&env, "sp_exp"), player.clone());
             let current_sponsored: i128 = env.storage().persistent().get(&sp_key).unwrap_or(0);
-            env.storage().persistent().set(&sp_key, &(current_sponsored + amount));
+            env.storage()
+                .persistent()
+                .set(&sp_key, &(current_sponsored + amount));
             Self::bump_entry_ttl(&env, &sp_key);
 
             env.events().publish(
@@ -3110,7 +3111,9 @@ impl ChessterEscrow {
 
             let current_nonce = Self::get_match_nonce(env.clone());
             let next_nonce = current_nonce + 1;
-            env.storage().instance().set(&Symbol::new(&env, "nonce"), &next_nonce);
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, "nonce"), &next_nonce);
 
             let token_client = token::Client::new(&env, &token);
             Self::validate_player_funds(&env, &token, &sponsor, amount);
@@ -3138,7 +3141,9 @@ impl ChessterEscrow {
 
             let mut updated_matches = active_matches.clone();
             updated_matches.push_back(game_code.clone());
-            env.storage().persistent().set(&player1_key, &updated_matches);
+            env.storage()
+                .persistent()
+                .set(&player1_key, &updated_matches);
             Self::bump_entry_ttl(&env, &player1_key);
             Self::bump_instance_ttl(&env);
 
@@ -3160,7 +3165,9 @@ impl ChessterEscrow {
 
             let sp_key = (Symbol::new(&env, "sp_exp"), player.clone());
             let current_sponsored: i128 = env.storage().persistent().get(&sp_key).unwrap_or(0);
-            env.storage().persistent().set(&sp_key, &(current_sponsored + amount));
+            env.storage()
+                .persistent()
+                .set(&sp_key, &(current_sponsored + amount));
             Self::bump_entry_ttl(&env, &sp_key);
 
             env.events().publish(

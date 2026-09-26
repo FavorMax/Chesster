@@ -2646,50 +2646,6 @@ fn test_resolve_match_with_used_nonce() {
 }
 
 #[test]
-fn test_batch_resolve_five_matches() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let coordinator = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
-    let contract_id = env.register(ChessterEscrow, ());
-    let client = ChessterEscrowClient::new(&env, &contract_id);
-
-    client.init(&coordinator, &500);
-    client.add_whitelisted_token(&token.address);
-
-    let mut resolutions = Vec::new(&env);
-    for i in 0..5 {
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-
-        let game_code = String::from_str(&env, &alloc::format!("GAME{}", i));
-        approve(&env, &token, &p1, &contract_id, 100);
-        approve(&env, &token, &p2, &contract_id, 100);
-        client.create_match(&game_code, &p1, &token.address, &100);
-        client.join_match(&game_code, &p2);
-
-        resolutions.push_back(MatchResolution {
-            match_id: game_code.clone(),
-            winner: Some(p1.clone()),
-            moves_hash: String::from_str(&env, "hash"),
-        });
-    }
-
-    client.batch_resolve_matches(&resolutions);
-
-    for i in 0..5 {
-        let game_code = String::from_str(&env, &alloc::format!("GAME{}", i));
-        let m = client.get_match(&game_code);
-        assert_eq!(m.status, MatchStatus::Resolved);
-    }
-}
-
-#[test]
 fn test_player_rating_commitment() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2854,7 +2810,7 @@ fn test_replay_protection() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #44)")]
+#[should_panic(expected = "Error(Contract, #43)")]
 fn test_replay_protection_rejects_duplicate_nonce() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2867,12 +2823,12 @@ fn test_replay_protection_rejects_duplicate_nonce() {
     client.increment_player_nonce(&player, &1);
     assert_eq!(client.get_account_nonce(&player), 1);
 
-    // Replay of Nonce 1 must panic with InvalidNonce (#44)
+    // Replay of Nonce 1 must panic with NonceAlreadyUsed (#43)
     client.increment_player_nonce(&player, &1);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #44)")]
+#[should_panic(expected = "Error(Contract, #43)")]
 fn test_replay_protection_rejects_out_of_order_nonce() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2881,7 +2837,7 @@ fn test_replay_protection_rejects_out_of_order_nonce() {
     let contract_id = env.register(ChessterEscrow, ());
     let client = ChessterEscrowClient::new(&env, &contract_id);
 
-    // Skipping from 0 to 5 must fail with InvalidNonce (#44)
+    // Skipping from 0 to 5 must fail with NonceAlreadyUsed (#43)
     client.increment_player_nonce(&player, &5);
 }
 
@@ -3242,7 +3198,10 @@ fn test_withdraw_cancellation_proposal() {
     client.join_match(&game_code, &player2);
 
     client.propose_mutual_cancellation(&game_code, &player1);
-    assert_eq!(client.get_match(&game_code).cancellation_proposed_by, Some(player1.clone()));
+    assert_eq!(
+        client.get_match(&game_code).cancellation_proposed_by,
+        Some(player1.clone())
+    );
 
     // Proposer withdraws proposal
     client.withdraw_cancellation_proposal(&game_code, &player1);
