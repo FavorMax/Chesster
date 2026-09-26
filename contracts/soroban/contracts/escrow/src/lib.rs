@@ -121,16 +121,6 @@ pub enum EscrowError {
     TreasuryVaultNotSet = 41,
     /// There is no positive token balance available to drain.
     NothingToDrain = 42,
-    /// Checked integer arithmetic overflowed or underflowed.
-    Overflow = 39,
-    /// Tournament entry fee has already been refunded to player.
-    AlreadyRefunded = 39,
-    /// Tournament is not eligible for refund (not cancelled and deadline not reached).
-    TournamentNotRefundable = 40,
-    /// Payout distribution basis points sum must equal 10,000 (100%).
-    InvalidPayoutDistribution = 41,
-    /// Tournament has reached its maximum player capacity.
-    TournamentFull = 42,
     /// Nonce has already been used for signature verification.
     NonceAlreadyUsed = 43,
     /// Submitted account nonce does not match expected incremented sequence (Issue #284).
@@ -638,31 +628,31 @@ fn release_reentrancy(env: &Env) {
 }
 
 /// Overflow-checked addition of two i128 token/fee amounts. Panics with
-/// `EscrowError::Overflow` instead of wrapping, so no arithmetic on funds can
+/// `EscrowError::InvariantViolated` instead of wrapping, so no arithmetic on funds can
 /// ever silently exceed i128 bounds.
 fn checked_add(env: &Env, a: i128, b: i128) -> i128 {
     a.checked_add(b)
-        .unwrap_or_else(|| panic_with_error!(env, EscrowError::Overflow))
+        .unwrap_or_else(|| panic_with_error!(env, EscrowError::InvariantViolated))
 }
 
-/// Overflow-checked subtraction. Panics with `EscrowError::Overflow` on
+/// Overflow-checked subtraction. Panics with `EscrowError::InvariantViolated` on
 /// underflow rather than wrapping into a large positive balance.
 fn checked_sub(env: &Env, a: i128, b: i128) -> i128 {
     a.checked_sub(b)
-        .unwrap_or_else(|| panic_with_error!(env, EscrowError::Overflow))
+        .unwrap_or_else(|| panic_with_error!(env, EscrowError::InvariantViolated))
 }
 
 /// Computes `a * b / denom` with the multiplication checked against i128
 /// overflow before the division. Used for fee (bps) and pari-mutuel payout
 /// math where `a * b` can exceed i128 for large wagers. Panics with
-/// `EscrowError::Overflow` on overflow or a zero/negative denominator.
+/// `EscrowError::InvariantViolated` on overflow or a zero/negative denominator.
 fn checked_mul_div(env: &Env, a: i128, b: i128, denom: i128) -> i128 {
     if denom <= 0 {
-        panic_with_error!(env, EscrowError::Overflow);
+        panic_with_error!(env, EscrowError::InvariantViolated);
     }
     a.checked_mul(b)
         .map(|product| product / denom)
-        .unwrap_or_else(|| panic_with_error!(env, EscrowError::Overflow))
+        .unwrap_or_else(|| panic_with_error!(env, EscrowError::InvariantViolated))
 }
 
 fn mul_div_bps(amount: i128, bps: u32) -> i128 {
@@ -3017,12 +3007,22 @@ impl ChessterEscrow {
                 Self::emit_milestone_event(env, w.clone(), streak, symbol_short!("streak25"));
             }
 
-            let loser = if w == &m.player1 { m.player2.clone().unwrap() } else { m.player1.clone() };
-            env.storage().instance().set(&(symbol_short!("streak"), loser), &0u32);
+            let loser = if w == &m.player1 {
+                m.player2.clone().unwrap()
+            } else {
+                m.player1.clone()
+            };
+            env.storage()
+                .instance()
+                .set(&(symbol_short!("streak"), loser), &0u32);
         } else {
-            env.storage().instance().set(&(symbol_short!("streak"), m.player1.clone()), &0u32);
+            env.storage()
+                .instance()
+                .set(&(symbol_short!("streak"), m.player1.clone()), &0u32);
             if let Some(p2) = m.player2.clone() {
-                env.storage().instance().set(&(symbol_short!("streak"), p2), &0u32);
+                env.storage()
+                    .instance()
+                    .set(&(symbol_short!("streak"), p2), &0u32);
             }
         }
         // Update platform metrics (Issue #288)
@@ -3047,7 +3047,7 @@ impl ChessterEscrow {
     fn emit_milestone_event(env: &Env, player: Address, streak_count: u32, milestone_type: Symbol) {
         env.events().publish(
             (symbol_short!("milestone"), player.clone()),
-            (streak_count, milestone_type)
+            (streak_count, milestone_type),
         );
     }
 
@@ -4023,11 +4023,11 @@ impl ChessterEscrow {
 
         let now = env.ledger().timestamp();
         if tournament.registration_deadline > 0 && now > tournament.registration_deadline {
-            panic_with_error!(&env, EscrowError::TournamentNotRefundable);
+            panic_with_error!(&env, EscrowError::InvalidTournament);
         }
 
         if tournament.max_players > 0 && tournament.players.len() >= tournament.max_players {
-            panic_with_error!(&env, EscrowError::TournamentFull);
+            panic_with_error!(&env, EscrowError::InvalidTournament);
         }
 
         if tournament.players.contains(&player) {
@@ -4042,7 +4042,7 @@ impl ChessterEscrow {
             &tournament.buy_in_amount,
         );
 
-        tournament.players.push_back(player);
+        tournament.players.push_back(player.clone());
         tournament.total_pool = checked_add(&env, tournament.total_pool, tournament.buy_in_amount);
 
         Self::add_locked(&env, &tournament.token, tournament.buy_in_amount);
@@ -4100,10 +4100,10 @@ impl ChessterEscrow {
         for bps in payout_bps.iter() {
             total_bps = total_bps
                 .checked_add(bps)
-                .unwrap_or_else(|| panic_with_error!(&env, EscrowError::InvalidPayoutDistribution));
+                .unwrap_or_else(|| panic_with_error!(&env, EscrowError::InvalidTournament));
         }
         if total_bps != 10_000 {
-            panic_with_error!(&env, EscrowError::InvalidPayoutDistribution);
+            panic_with_error!(&env, EscrowError::InvalidTournament);
         }
 
         let fee_recipient =
@@ -4228,7 +4228,7 @@ impl ChessterEscrow {
             && tournament.players.len() < tournament.min_players;
 
         if tournament.status != TournamentStatus::Cancelled && !quorum_failed {
-            panic_with_error!(&env, EscrowError::TournamentNotRefundable);
+            panic_with_error!(&env, EscrowError::InvalidTournament);
         }
 
         if tournament.status != TournamentStatus::Cancelled {
@@ -4247,7 +4247,7 @@ impl ChessterEscrow {
             player.clone(),
         );
         if env.storage().persistent().has(&refund_key) {
-            panic_with_error!(&env, EscrowError::AlreadyRefunded);
+            panic_with_error!(&env, EscrowError::AlreadyResolvedOrRefunded);
         }
 
         env.storage().persistent().set(&refund_key, &true);

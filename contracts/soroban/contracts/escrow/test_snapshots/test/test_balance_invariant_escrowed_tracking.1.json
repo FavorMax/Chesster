@@ -1342,6 +1342,36 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "streak"
+                            },
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "streak"
+                            },
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "sup_tok"
                             },
                             {
