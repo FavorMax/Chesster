@@ -1,3 +1,10 @@
+# [1.29.0](https://github.com/Kaycee276/Chesster/compare/v1.28.0...v1.29.0) (2026-09-27)
+
+
+### Features
+
+* **security,testing:** sanitize chat XSS, rate-limit and sanitize API inputs, add frontend unit tests ([3557f66](https://github.com/Kaycee276/Chesster/commit/3557f66d096cec22f2bc14fffd31a532d56e0698))
+
 # [1.28.0](https://github.com/Kaycee276/Chesster/compare/v1.27.0...v1.28.0) (2026-09-27)
 
 
