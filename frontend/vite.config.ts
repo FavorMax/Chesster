@@ -2,9 +2,22 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+const plugins: any[] = [react(), tailwindcss()];
+
 // https://vite.dev/config/
 export default defineConfig({
-	plugins: [react(), tailwindcss()],
+	plugins,
+	build: {
+		chunkSizeWarningLimit: 500,
+		rollupOptions: {
+			output: {
+				manualChunks: {
+					vendor: ["react", "react-dom", "react-router-dom"],
+					stellar: ["@stellar/stellar-sdk", "@stellar/freighter-api"],
+				},
+			},
+		},
+	},
 	server: {
 		port: 3090,
 		// host: true,
