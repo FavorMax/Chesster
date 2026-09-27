@@ -1,3 +1,18 @@
+# [1.25.0](https://github.com/Kaycee276/Chesster/compare/v1.24.0...v1.25.0) (2026-09-27)
+
+
+### Bug Fixes
+
+* correct workspace CI dependency paths ([99c6f5f](https://github.com/Kaycee276/Chesster/commit/99c6f5f627b10b4a747c098feb0526025926fb88))
+
+
+### Features
+
+* **backend:** Implement Distributed Lock for Move Submission using Redis Redlock - Closes [#239](https://github.com/Kaycee276/Chesster/issues/239) ([75d8595](https://github.com/Kaycee276/Chesster/commit/75d859539ce4da4cb959593a81f0e6ba6269d4cb))
+* **backend:** Implement Redis Adapter for Socket.io Clustering & Horizontal Scaling - Closes [#238](https://github.com/Kaycee276/Chesster/issues/238) ([99707a0](https://github.com/Kaycee276/Chesster/commit/99707a0af4b63ea07e07b6ac9d3246004d464240))
+* **backend:** Implement WebSocket Latency Telemetry and Automatic Disconnect Grace Period - Closes [#240](https://github.com/Kaycee276/Chesster/issues/240) ([9013e8f](https://github.com/Kaycee276/Chesster/commit/9013e8f7131a3ad29a4d716f80a532998d5d1fcb))
+* **contracts:** Add On-Chain Event Emitting for Player Win Streak & Trophy Milestones - Closes [#237](https://github.com/Kaycee276/Chesster/issues/237) ([fbdb3ea](https://github.com/Kaycee276/Chesster/commit/fbdb3ea99636c8465445af07ee9c7af85b202185))
+
 # [1.24.0](https://github.com/Kaycee276/Chesster/compare/v1.23.0...v1.24.0) (2026-09-27)
 
 
