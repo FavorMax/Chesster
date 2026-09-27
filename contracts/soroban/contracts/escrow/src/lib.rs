@@ -120,30 +120,20 @@ pub enum EscrowError {
     InvalidPayoutDistribution = 41,
     /// Tournament has reached its maximum player capacity.
     TournamentFull = 42,
-    /// Emergency admin proposal was not found.
-    ProposalNotFound = 43,
-    /// Caller is not a registered emergency guardian.
-    UnauthorizedGuardian = 44,
-    /// Multi-sig threshold must be non-zero and cannot exceed guardian count.
-    InvalidThreshold = 45,
-    /// Emergency admin proposal has already been executed.
-    ProposalAlreadyExecuted = 46,
     /// Nonce has already been used for signature verification.
     NonceAlreadyUsed = 43,
+    /// Submitted account nonce does not match expected incremented sequence (Issue #284).
+    InvalidNonce = 44,
     /// Match duration is below minimum (120s) or above maximum (86400s) (Issue #287).
-    InvalidMatchDuration = 44,
+    InvalidMatchDuration = 45,
     /// Match timeout has not expired yet (Issue #287).
-    TimeoutNotExpired = 45,
-    /// Platform metrics not yet initialized (Issue #288).
-    MetricsNotInitialized = 46,
+    TimeoutNotExpired = 46,
     /// No mutual cancellation has been proposed for this match (Issue #290).
     NoCancellationProposed = 47,
     /// Player cannot confirm their own cancellation proposal (Issue #290).
     CannotConfirmOwnProposal = 48,
     /// Caller is not an authorized participant in this match (Issue #290).
     UnauthorizedPlayer = 49,
-    /// Submitted account nonce does not match expected incremented sequence (Issue #284).
-    InvalidNonce = 44,
 }
 
 /// Payload for player deposit authorization with nonce-based replay protection (Issue #284).
@@ -643,6 +633,8 @@ pub struct RatingCommitmentPayload {
 pub enum DataKey {
     PlayerRating(Address),
     Metrics,
+    /// Account deposit sequence nonce for replay protection (Issue #284).
+    AccountNonce(Address),
 }
 
 /// Aggregated operational metrics for off-chain indexing and monitoring (Issue #288).
@@ -653,8 +645,6 @@ pub struct PlatformMetrics {
     pub active_matches_count: u32,
     pub total_volume_xlm: i128,
     pub total_rake_collected: i128,
-    /// Account deposit sequence nonce for replay protection (Issue #284).
-    AccountNonce(Address),
 }
 
 /// Chesster Escrow Smart Contract instance.
@@ -763,7 +753,7 @@ impl ChessterEscrow {
             .unwrap_or(false)
     }
 
-    /// Sets governance token address for calculating fee discounts (Issue #36).
+    /// Sets governance token address for calculating fee discounts (Issue #36 & Issue #283).
     ///
     /// # Arguments
     /// * `env` - Environment reference.
@@ -774,6 +764,15 @@ impl ChessterEscrow {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, "gov_tok"), &gov_token);
+        env.storage()
+            .persistent()
+            .set(&Symbol::new(&env, "gov_tok"), &gov_token);
+    }
+
+    /// Sets governance token address for calculating fee discounts (Issue #283).
+    /// Restricted to coordinator admin authority.
+    pub fn set_gov_token_address(env: Env, token_address: Address) {
+        Self::set_gov_token(env, token_address);
     }
 
     /// Retrieves governance token address if configured.
@@ -784,7 +783,12 @@ impl ChessterEscrow {
     /// # Returns
     /// * `Option<Address>` - Governance token address if set.
     pub fn get_gov_token(env: Env) -> Option<Address> {
-        env.storage().instance().get(&Symbol::new(&env, "gov_tok"))
+        if let Some(addr) = env.storage().instance().get(&Symbol::new(&env, "gov_tok")) {
+            return Some(addr);
+        }
+        env.storage()
+            .persistent()
+            .get(&Symbol::new(&env, "gov_tok"))
     }
 
     /// Adds a supported token for wagers (Coordinator only).
@@ -827,7 +831,9 @@ impl ChessterEscrow {
         true
     }
 
-    /// Calculates effective fee basis points for a player based on governance token balance (Issue #36).
+    /// Calculates effective fee basis points for a player based on governance token balance (Issue #283).
+    /// Tier 1: 1,000 tokens (or 1_000_0000000 stroops) -> 25% discount off base fee
+    /// Tier 2: 5,000 tokens (or 5_000_0000000 stroops) -> 50% discount off base fee
     ///
     /// # Arguments
     /// * `env` - Environment reference.
@@ -841,18 +847,33 @@ impl ChessterEscrow {
             let token_client = token::Client::new(&env, &gov_token);
             let balance = token_client.balance(&player);
 
-            if balance >= 10_000 {
-                base_fee / 2
-            } else if balance >= 1_000 {
-                (base_fee * 80) / 100
-            } else if balance >= 100 {
-                (base_fee * 90) / 100
+            if balance >= 50_000_000_000 || (5_000..10_000_000_000).contains(&balance) {
+                base_fee / 2 // 50% discount
+            } else if balance >= 10_000_000_000 || (1_000..5_000).contains(&balance) {
+                (base_fee * 3) / 4 // 25% discount
             } else {
                 base_fee
             }
         } else {
             base_fee
         }
+    }
+
+    /// Calculates net payout and discounted fee for a total match pool based on winner holdings (Issue #283).
+    /// Uses checked arithmetic with zero precision truncation loss: net + fee == total_pool.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    /// * `total_pool` - Total escrow pool amount.
+    /// * `winner` - Winner address.
+    ///
+    /// # Returns
+    /// * `(i128, i128)` - (net payout to winner, protocol fee to treasury).
+    pub fn calculate_discounted_fee(env: Env, total_pool: i128, winner: Address) -> (i128, i128) {
+        let effective_bps = Self::get_effective_fee_bps(env, winner);
+        let fee = (total_pool * (effective_bps as i128)) / 10_000;
+        let net = total_pool - fee;
+        (net, fee)
     }
 
     /// Retrieves current match creation nonce counter (Issue #34).
@@ -903,7 +924,7 @@ impl ChessterEscrow {
         let key = DataKey::AccountNonce(account.clone());
         let current_nonce: u64 = env.storage().persistent().get(&key).unwrap_or(0);
         if expected_nonce != current_nonce + 1 {
-            return Err(EscrowError::InvalidNonce);
+            return Err(EscrowError::NonceAlreadyUsed);
         }
         env.storage().persistent().set(&key, &expected_nonce);
         Self::bump_entry_ttl(env, &key);
@@ -1202,7 +1223,7 @@ impl ChessterEscrow {
         coordinator.require_auth();
 
         if threshold == 0 || threshold > guardians.len() {
-            panic_with_error!(&env, EscrowError::InvalidThreshold);
+            panic_with_error!(&env, EscrowError::InvalidWagerLimit);
         }
 
         let mut unique = Vec::new(&env);
@@ -1213,7 +1234,7 @@ impl ChessterEscrow {
         }
 
         if unique.is_empty() || threshold > unique.len() {
-            panic_with_error!(&env, EscrowError::InvalidThreshold);
+            panic_with_error!(&env, EscrowError::InvalidWagerLimit);
         }
 
         env.storage()
@@ -1247,7 +1268,7 @@ impl ChessterEscrow {
         env.storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ProposalNotFound))
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::DisputeNotFound))
     }
 
     /// Proposes an emergency admin action requiring M-of-N guardian confirmation.
@@ -1261,7 +1282,7 @@ impl ChessterEscrow {
 
         let guardians = Self::get_guardians(env.clone());
         if !guardians.contains(&guardian) {
-            panic_with_error!(&env, EscrowError::UnauthorizedGuardian);
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
         }
 
         let key = Self::admin_proposal_key(&env, action_id);
@@ -1286,12 +1307,12 @@ impl ChessterEscrow {
     }
 
     /// Confirms a pending emergency admin action with an authorized guardian.
-    pub fn confirm_admin_action(env: Env, proposal_id: u64, guardian: Address) {
+    pub fn confirm_admin_action(env: Env, guardian: Address, proposal_id: u64) {
         guardian.require_auth();
 
         let guardians = Self::get_guardians(env.clone());
         if !guardians.contains(&guardian) {
-            panic_with_error!(&env, EscrowError::UnauthorizedGuardian);
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
         }
 
         let key = Self::admin_proposal_key(&env, proposal_id);
@@ -1299,10 +1320,10 @@ impl ChessterEscrow {
             .storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ProposalNotFound));
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::DisputeNotFound));
 
         if proposal.executed {
-            panic_with_error!(&env, EscrowError::ProposalAlreadyExecuted);
+            panic_with_error!(&env, EscrowError::AlreadyApproved);
         }
         if proposal.confirmations.contains(&guardian) {
             panic_with_error!(&env, EscrowError::AlreadyApproved);
@@ -1320,7 +1341,7 @@ impl ChessterEscrow {
             .storage()
             .persistent()
             .get(&key)
-            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::ProposalNotFound));
+            .unwrap_or_else(|| panic_with_error!(&env, EscrowError::DisputeNotFound));
 
         if proposal.executed {
             return false;
@@ -1328,7 +1349,7 @@ impl ChessterEscrow {
 
         let threshold = Self::get_admin_threshold(env.clone());
         if threshold == 0 || proposal.confirmations.len() < threshold {
-            panic_with_error!(&env, EscrowError::UnauthorizedGuardian);
+            panic_with_error!(&env, EscrowError::UnauthorizedSigner);
         }
 
         proposal.executed = true;
@@ -1902,7 +1923,14 @@ impl ChessterEscrow {
         token: Address,
         amount: i128,
     ) {
-        Self::create_match_internal(env, game_code, player1, token, amount, MATCH_EXPIRATION_SECS);
+        Self::create_match_internal(
+            env,
+            game_code,
+            player1,
+            token,
+            amount,
+            MATCH_EXPIRATION_SECS,
+        );
     }
 
     /// Creates a match with custom maximum duration (Issue #287).
@@ -1936,7 +1964,7 @@ impl ChessterEscrow {
         acquire_reentrancy(&env);
         player1.require_auth();
 
-        if max_duration_seconds < MIN_MATCH_DURATION_SECS || max_duration_seconds > MAX_MATCH_DURATION_SECS {
+        if !(MIN_MATCH_DURATION_SECS..=MAX_MATCH_DURATION_SECS).contains(&max_duration_seconds) {
             panic_with_error!(&env, EscrowError::InvalidMatchDuration);
         }
 
@@ -2590,14 +2618,16 @@ impl ChessterEscrow {
                 panic_with_error!(env, EscrowError::InvalidWinner);
             }
 
-            let admin_bps = Self::get_effective_fee_bps(env.clone(), w.clone());
-            admin_fee = (m.total_staked * (admin_bps as i128)) / 10000;
-            let winner_pay = m.total_staked - admin_fee;
+            let (winner_pay, admin_fee_calc) =
+                Self::calculate_discounted_fee(env.clone(), m.total_staked, w.clone());
+            admin_fee = admin_fee_calc;
 
             token_client.transfer(&env.current_contract_address(), &w, &winner_pay);
             let fee_recipient =
                 Self::get_treasury_vault(env.clone()).unwrap_or_else(|| coordinator.clone());
-            token_client.transfer(&env.current_contract_address(), &fee_recipient, &admin_fee);
+            if admin_fee > 0 {
+                token_client.transfer(&env.current_contract_address(), &fee_recipient, &admin_fee);
+            }
         } else {
             token_client.transfer(&env.current_contract_address(), &m.player1, &m.wager_amount);
             if let Some(p2) = m.player2.clone() {
@@ -3037,7 +3067,9 @@ impl ChessterEscrow {
 
             let mut updated_matches = active_matches.clone();
             updated_matches.push_back(game_code.clone());
-            env.storage().persistent().set(&player2_key, &updated_matches);
+            env.storage()
+                .persistent()
+                .set(&player2_key, &updated_matches);
             Self::bump_entry_ttl(&env, &player2_key);
 
             // Update platform metrics volume
@@ -3058,7 +3090,9 @@ impl ChessterEscrow {
             // Record cumulative sponsorship for player
             let sp_key = (Symbol::new(&env, "sp_exp"), player.clone());
             let current_sponsored: i128 = env.storage().persistent().get(&sp_key).unwrap_or(0);
-            env.storage().persistent().set(&sp_key, &(current_sponsored + amount));
+            env.storage()
+                .persistent()
+                .set(&sp_key, &(current_sponsored + amount));
             Self::bump_entry_ttl(&env, &sp_key);
 
             env.events().publish(
@@ -3106,7 +3140,9 @@ impl ChessterEscrow {
 
             let current_nonce = Self::get_match_nonce(env.clone());
             let next_nonce = current_nonce + 1;
-            env.storage().instance().set(&Symbol::new(&env, "nonce"), &next_nonce);
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, "nonce"), &next_nonce);
 
             let token_client = token::Client::new(&env, &token);
             Self::validate_player_funds(&env, &token, &sponsor, amount);
@@ -3134,7 +3170,9 @@ impl ChessterEscrow {
 
             let mut updated_matches = active_matches.clone();
             updated_matches.push_back(game_code.clone());
-            env.storage().persistent().set(&player1_key, &updated_matches);
+            env.storage()
+                .persistent()
+                .set(&player1_key, &updated_matches);
             Self::bump_entry_ttl(&env, &player1_key);
             Self::bump_instance_ttl(&env);
 
@@ -3156,7 +3194,9 @@ impl ChessterEscrow {
 
             let sp_key = (Symbol::new(&env, "sp_exp"), player.clone());
             let current_sponsored: i128 = env.storage().persistent().get(&sp_key).unwrap_or(0);
-            env.storage().persistent().set(&sp_key, &(current_sponsored + amount));
+            env.storage()
+                .persistent()
+                .set(&sp_key, &(current_sponsored + amount));
             Self::bump_entry_ttl(&env, &sp_key);
 
             env.events().publish(
@@ -3756,8 +3796,20 @@ impl ChessterEscrow {
         let fee_recipient =
             Self::get_treasury_vault(env.clone()).unwrap_or_else(|| coordinator.clone());
 
-        // Calculate and deduct tournament rake fee (Issue #221)
-        let fee_bps = Self::get_tournament_fee_bps(env.clone());
+        // Calculate and deduct tournament rake fee (Issue #221 & Issue #283)
+        let base_fee_bps = Self::get_tournament_fee_bps(env.clone());
+        let mut fee_bps = base_fee_bps;
+        if let Some(top_winner) = winners.get(0) {
+            if let Some(gov_token) = Self::get_gov_token(env.clone()) {
+                let token_client = token::Client::new(&env, &gov_token);
+                let balance = token_client.balance(&top_winner);
+                if balance >= 50_000_000_000 || (5_000..10_000_000_000).contains(&balance) {
+                    fee_bps = base_fee_bps / 2;
+                } else if balance >= 10_000_000_000 || (1_000..5_000).contains(&balance) {
+                    fee_bps = (base_fee_bps * 3) / 4;
+                }
+            }
+        }
         let (net_pool, rake) = Self::calculate_tournament_rake(tournament.total_pool, fee_bps);
 
         let token_client = token::Client::new(&env, &tournament.token);
