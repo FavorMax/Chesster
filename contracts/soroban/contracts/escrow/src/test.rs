@@ -3182,6 +3182,35 @@ fn test_collaborative_mutual_cancellation_protocol() {
 
     let contract_id = env.register(ChessterEscrow, ());
     let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500); // 5% fee
+    client.add_whitelisted_token(&token.address);
+
+    let game_code = String::from_str(&env, "CEI1");
+    approve(&env, &token, &player1, &contract_id, 1000);
+    approve(&env, &token, &player2, &contract_id, 1000);
+    client.create_match(&game_code, &player1, &token.address, &100);
+    client.join_match(&game_code, &player2);
+
+    client.resolve_match(&game_code, &Some(player1.clone()));
+
+    // 200 pot, 5% fee = 10; winner takes 190.
+    assert_eq!(token.balance(&player1), 1090);
+    assert_eq!(token.balance(&player2), 900);
+    assert_eq!(token.balance(&coordinator), 10);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    // Effects were applied before the transfers: the match is fully resolved.
+    let match_data = client.get_match(&game_code);
+    assert_eq!(match_data.status, MatchStatus::Resolved);
+    assert_eq!(match_data.winner, Some(player1));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_resolve_match_cannot_be_replayed_after_settlement() {
+    // Exploit: a re-entrant or replayed resolve must not double-spend the pot.
+    // Because state is finalized before any transfer, the second resolve sees a
+    // non-Active match and aborts with MatchNotActive (#7).
 
     client.init(&coordinator, &500);
     client.add_whitelisted_token(&token.address);
@@ -3264,6 +3293,17 @@ fn test_withdraw_cancellation_proposal() {
 
     let contract_id = env.register(ChessterEscrow, ());
     let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500);
+    client.add_whitelisted_token(&token.address);
+
+    let game_code = String::from_str(&env, "CEI2");
+    approve(&env, &token, &player1, &contract_id, 1000);
+    approve(&env, &token, &player2, &contract_id, 1000);
+    client.create_match(&game_code, &player1, &token.address, &100);
+    client.join_match(&game_code, &player2);
+
+    client.resolve_match(&game_code, &Some(player1.clone()));
+    client.resolve_match(&game_code, &Some(player1));
 
     client.init(&coordinator, &500);
     client.add_whitelisted_token(&token.address);
