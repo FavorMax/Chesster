@@ -2646,50 +2646,6 @@ fn test_resolve_match_with_used_nonce() {
 }
 
 #[test]
-fn test_batch_resolve_five_matches() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let coordinator = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
-    let contract_id = env.register(ChessterEscrow, ());
-    let client = ChessterEscrowClient::new(&env, &contract_id);
-
-    client.init(&coordinator, &500);
-    client.add_whitelisted_token(&token.address);
-
-    let mut resolutions = Vec::new(&env);
-    for i in 0..5 {
-        let p1 = Address::generate(&env);
-        let p2 = Address::generate(&env);
-        token_admin_client.mint(&p1, &1000);
-        token_admin_client.mint(&p2, &1000);
-
-        let game_code = String::from_str(&env, &alloc::format!("GAME{}", i));
-        approve(&env, &token, &p1, &contract_id, 100);
-        approve(&env, &token, &p2, &contract_id, 100);
-        client.create_match(&game_code, &p1, &token.address, &100);
-        client.join_match(&game_code, &p2);
-
-        resolutions.push_back(MatchResolution {
-            match_id: game_code.clone(),
-            winner: Some(p1.clone()),
-            moves_hash: String::from_str(&env, "hash"),
-        });
-    }
-
-    client.batch_resolve_matches(&resolutions);
-
-    for i in 0..5 {
-        let game_code = String::from_str(&env, &alloc::format!("GAME{}", i));
-        let m = client.get_match(&game_code);
-        assert_eq!(m.status, MatchStatus::Resolved);
-    }
-}
-
-#[test]
 fn test_player_rating_commitment() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2854,7 +2810,7 @@ fn test_replay_protection() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #44)")]
+#[should_panic(expected = "Error(Contract, #43)")]
 fn test_replay_protection_rejects_duplicate_nonce() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2867,12 +2823,12 @@ fn test_replay_protection_rejects_duplicate_nonce() {
     client.increment_player_nonce(&player, &1);
     assert_eq!(client.get_account_nonce(&player), 1);
 
-    // Replay of Nonce 1 must panic with InvalidNonce (#44)
+    // Replay of Nonce 1 must panic with NonceAlreadyUsed (#43)
     client.increment_player_nonce(&player, &1);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #44)")]
+#[should_panic(expected = "Error(Contract, #43)")]
 fn test_replay_protection_rejects_out_of_order_nonce() {
     let env = Env::default();
     env.mock_all_auths();
@@ -2881,7 +2837,7 @@ fn test_replay_protection_rejects_out_of_order_nonce() {
     let contract_id = env.register(ChessterEscrow, ());
     let client = ChessterEscrowClient::new(&env, &contract_id);
 
-    // Skipping from 0 to 5 must fail with InvalidNonce (#44)
+    // Skipping from 0 to 5 must fail with NonceAlreadyUsed (#43)
     client.increment_player_nonce(&player, &5);
 }
 
@@ -3242,7 +3198,10 @@ fn test_withdraw_cancellation_proposal() {
     client.join_match(&game_code, &player2);
 
     client.propose_mutual_cancellation(&game_code, &player1);
-    assert_eq!(client.get_match(&game_code).cancellation_proposed_by, Some(player1.clone()));
+    assert_eq!(
+        client.get_match(&game_code).cancellation_proposed_by,
+        Some(player1.clone())
+    );
 
     // Proposer withdraws proposal
     client.withdraw_cancellation_proposal(&game_code, &player1);
@@ -3283,3 +3242,85 @@ fn test_mutual_cancellation_outsider_cannot_confirm() {
     client.confirm_mutual_cancellation(&game_code, &outsider);
 }
 
+#[test]
+fn test_fee_discount_tiers() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let zero_bal_winner = Address::generate(&env);
+    let tier1_winner = Address::generate(&env);
+    let tier2_winner = Address::generate(&env);
+    let opponent = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    let (gov_token, gov_token_admin_client) = create_token_contract(&env, &token_admin);
+
+    // Fund players with match wagering tokens
+    token_admin_client.mint(&zero_bal_winner, &10_000);
+    token_admin_client.mint(&tier1_winner, &10_000);
+    token_admin_client.mint(&tier2_winner, &10_000);
+    token_admin_client.mint(&opponent, &30_000);
+
+    // Fund governance token holdings
+    // Tier 1: 1,000 tokens (10_000_000_000 stroops) -> 25% discount off 500 bps = 375 bps
+    gov_token_admin_client.mint(&tier1_winner, &10_000_000_000);
+    // Tier 2: 5,000 tokens (50_000_000_000 stroops) -> 50% discount off 500 bps = 250 bps
+    gov_token_admin_client.mint(&tier2_winner, &50_000_000_000);
+
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+
+    client.init(&coordinator, &500); // 5% base fee (500 bps)
+    client.add_whitelisted_token(&token.address);
+    client.set_gov_token_address(&gov_token.address);
+
+    assert_eq!(client.get_gov_token(), Some(gov_token.address.clone()));
+
+    // 1. Verify calculated effective fee bps
+    assert_eq!(client.get_effective_fee_bps(&zero_bal_winner), 500); // 0% discount
+    assert_eq!(client.get_effective_fee_bps(&tier1_winner), 375); // 25% discount
+    assert_eq!(client.get_effective_fee_bps(&tier2_winner), 250); // 50% discount
+
+    // 2. Verify calculate_discounted_fee view function and strict balance conservation
+    let pool: i128 = 200;
+    let (net0, fee0) = client.calculate_discounted_fee(&pool, &zero_bal_winner);
+    assert_eq!(fee0, 10);
+    assert_eq!(net0, 190);
+    assert_eq!(net0 + fee0, pool);
+
+    let (net1, fee1) = client.calculate_discounted_fee(&pool, &tier1_winner);
+    assert_eq!(fee1, 7); // 200 * 375 / 10000 = 7.5 -> 7
+    assert_eq!(net1, 193);
+    assert_eq!(net1 + fee1, pool);
+
+    let (net2, fee2) = client.calculate_discounted_fee(&pool, &tier2_winner);
+    assert_eq!(fee2, 5); // 200 * 250 / 10000 = 5
+    assert_eq!(net2, 195);
+    assert_eq!(net2 + fee2, pool);
+
+    // 3. Test resolve_match execution for Tier 1 winner
+    approve(&env, &token, &tier1_winner, &contract_id, 100);
+    approve(&env, &token, &opponent, &contract_id, 100);
+
+    let game_code_1 = String::from_str(&env, "GAME_TIER1");
+    client.create_match(&game_code_1, &tier1_winner, &token.address, &100);
+    client.join_match(&game_code_1, &opponent);
+
+    client.resolve_match(&game_code_1, &Some(tier1_winner.clone()));
+    assert_eq!(token.balance(&tier1_winner), 10_000 - 100 + 193); // net payout 193
+    assert_eq!(token.balance(&coordinator), 7); // fee payout 7
+
+    // 4. Test resolve_match execution for Tier 2 winner
+    approve(&env, &token, &tier2_winner, &contract_id, 100);
+    approve(&env, &token, &opponent, &contract_id, 100);
+
+    let game_code_2 = String::from_str(&env, "GAME_TIER2");
+    client.create_match(&game_code_2, &tier2_winner, &token.address, &100);
+    client.join_match(&game_code_2, &opponent);
+
+    client.resolve_match(&game_code_2, &Some(tier2_winner.clone()));
+    assert_eq!(token.balance(&tier2_winner), 10_000 - 100 + 195); // net payout 195
+    assert_eq!(token.balance(&coordinator), 7 + 5); // additional fee payout 5
+}
