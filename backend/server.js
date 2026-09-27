@@ -21,6 +21,8 @@ const eventConsumer = require("./workers/eventConsumer");
 const supabase = require("./config/supabase");
 const logger = require("./utils/logger");
 const { errorHandler, installGlobalHandlers } = require("./middleware/errorHandler");
+const { createRateLimiter } = require("./middleware/rateLimiter");
+const { sanitizeInput } = require("./middleware/sanitizeInput");
 const { moderateMessage, checkSlowMode } = require("./services/chatService");
 const { JWT_SECRET } = require("./middleware/authMiddleware");
 const { createSocketRateLimiter } = require("./middleware/socketRateLimiter");
@@ -123,6 +125,16 @@ app.get("/api/csrf-token", (req, res) => {
 
 // Swagger API documentation (Issue #152)
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+// Security middleware: strip/reject malicious input before it reaches any route
+// handler, and rate-limit the API surface to blunt brute-forcing and DoS.
+app.use(sanitizeInput);
+
+const apiLimiter = createRateLimiter({
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_MAX) || 300,
+});
+app.use("/api", apiLimiter);
 
 // Mount routes
 app.use("/api", gameRoutes);
