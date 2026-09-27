@@ -47,6 +47,7 @@ import ConfirmModal from "./ConfirmModal";
 import GameResultModal from "./GameResultModal";
 import TurnTimer from "./TurnTimer";
 import ChatPanel from "./ChatPanel";
+import MoveInputBar from "./MoveInputBar";
 
 const PIECE_SYMBOLS: Record<string, string> = {
 	K: "♔",
@@ -335,6 +336,14 @@ function ChessBoardInner() {
 	// navigation/annotation shortcuts and drag/right-drag pointer tracking.
 	const boardGridRef = useRef<HTMLDivElement>(null);
 
+	// ── Keyboard-only move entry (#315) ─────────────────────────────────────
+	// A square cursor roams the grid with the arrow keys; Space picks up or
+	// drops a piece exactly like clicking the square. "/" or "M" focuses the
+	// SAN command bar. Announcements go through a polite live region.
+	const [cursor, setCursor] = useState<[number, number] | null>(null);
+	const [boardAnnouncement, setBoardAnnouncement] = useState("");
+	const moveInputRef = useRef<HTMLInputElement | null>(null);
+
 	// ── Piece move animation ───────────────────────────────────────────────────
 	const lastMove = useGameStore((s) => s.lastMove);
 	const [animKey, setAnimKey] = useState<string | null>(null);
@@ -530,6 +539,13 @@ function ChessBoardInner() {
 
 			const key = e.key.toLowerCase();
 
+			// "/" or "M" jumps to the quick-move command bar (#315).
+			if (key === "/" || key === "m") {
+				e.preventDefault();
+				moveInputRef.current?.focus();
+				return;
+			}
+
 			if (key === "f") {
 				e.preventDefault();
 				if (e.shiftKey) {
@@ -666,14 +682,46 @@ function ChessBoardInner() {
 		setTimeout(() => setCopied(false), 1200);
 	};
 
+	// ── Keyboard square cursor (#315) ───────────────────────────────────────
+	// Announces the square under the cursor (plus its legal destinations
+	// while a piece is picked up) so screen-reader users can navigate the
+	// grid without a mouse.
+	const announceCursor = (row: number, col: number, pickedUp: boolean) => {
+		const piece = board[row]?.[col] ?? ".";
+		const base = squareAriaLabel(piece, row, col);
+		if (!pickedUp) {
+			setBoardAnnouncement(base);
+			return;
+		}
+		const targets = getPossibleMoves(board, [row, col], playerColor!).map(
+			([r, c]) => squareAriaLabel(board[r][c], r, c),
+		);
+		setBoardAnnouncement(
+			targets.length > 0
+				? `${base} picked up. Legal moves: ${targets.join(", ")}`
+				: `${base} picked up. No legal moves.`,
+		);
+	};
+
+	const moveCursor = (row: number, col: number) => {
+		const clampedRow = Math.max(0, Math.min(7, row));
+		const clampedCol = Math.max(0, Math.min(7, col));
+		setCursor([clampedRow, clampedCol]);
+		announceCursor(clampedRow, clampedCol, false);
+	};
+
 	// Shared by tap-to-move and drag-and-drop: attempts to move the piece on
 	// `from` to `to`, opening the promotion modal if needed and giving a
 	// short haptic tick on supported devices once the move lands (#253).
-	const commitMove = async (from: [number, number], to: [number, number]) => {
+	const commitMove = async (
+		from: [number, number],
+		to: [number, number],
+		promotion?: string,
+	) => {
 		const piece = board[from[0]][from[1]];
 		const isPromotion = piece.toLowerCase() === "p" && (to[0] === 0 || to[0] === 7);
 
-		if (isPromotion) {
+		if (isPromotion && !promotion) {
 			setPromotionMove({ from, to });
 			return;
 		}
@@ -681,7 +729,7 @@ function ChessBoardInner() {
 		setIsMoving(true);
 		const toastId = addToast("Moving...", "loading");
 		try {
-			await makeMove(from, to);
+			await makeMove(from, to, promotion);
 			if ("vibrate" in navigator) navigator.vibrate(15);
 		} catch (error: unknown) {
 			addToast(friendlyError(error), "error");
@@ -1130,6 +1178,18 @@ function ChessBoardInner() {
 				)}
 			</div>
 
+			{/* ── Screen-reader announcements (#315) ── */}
+			<div role="status" aria-live="polite" className="sr-only">{boardAnnouncement}</div>
+
+			{/* ── Move input bar (#315) ── */}
+			<MoveInputBar
+				board={board}
+				turn={playerColor!}
+				isPlayerTurn={isMyTurn && status === "active" && viewingIndex === null}
+				onMove={commitMove}
+				focusRef={moveInputRef}
+			/>
+
 			{/* ── Board (fills remaining height) ── */}
 			<div
 				ref={boardWrapperRef}
@@ -1154,7 +1214,7 @@ function ChessBoardInner() {
 					ref={boardGridRef}
 					role="grid"
 					tabIndex={-1}
-					aria-label={`Chess board, ${moveHistory.length} moves played. Use arrow keys to review, Z to step back, F to flip the board.`}
+					aria-label={`Chess board, ${moveHistory.length} moves played. Use the move input bar to type moves, arrow keys to move the square cursor, Enter to pick up or place, Z to step back, F to flip the board.`}
 					className={`relative rounded-sm overflow-hidden shadow-2xl transition-opacity outline-none focus-visible:ring-2 focus-visible:ring-yellow-400 ${isMoving ? "opacity-70" : "opacity-100"}`}
 					style={
 						{
@@ -1208,6 +1268,8 @@ function ChessBoardInner() {
 						const isDragSource =
 							dragPiece !== null && dragPiece.row === actualRow && dragPiece.col === actualCol;
 
+						const isCursor = cursor !== null && cursor[0] === actualRow && cursor[1] === actualCol;
+
 						return (
 							<div
 								key={`${rowIndex}-${colIndex}`}
@@ -1215,21 +1277,39 @@ function ChessBoardInner() {
 								role="gridcell"
 								tabIndex={0}
 								aria-label={squareAriaLabel(piece, actualRow, actualCol)}
-								aria-selected={selected === true}
+								aria-selected={selected === true || isCursor}
 								className={`board-square relative flex items-center justify-center cursor-pointer transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-blue-400 focus-visible:-outline-offset-2 ${
 									isLight ? "bg-(--sq-light)" : "bg-(--sq-dark)"
 								} ${selected ? "square-selected bg-yellow-400/75" : ""} ${
 									isKingInCheck ? "square-check bg-red-500/80" : ""
 								} ${isLastMoveSquare ? "square-last-move bg-yellow-300/45" : ""} ${
 									highlight ? " outline-2 outline-yellow-300/60 -outline-offset-2" : ""
-								}`}
+								} ${isCursor ? "outline-2 outline-sky-400 -outline-offset-2" : ""}`}
 								style={isCaptureSquare ? { animation: "captureFlash 0.4s ease-out forwards" } : undefined}
 								onClick={() => handleSquareClick(actualRow, actualCol)}
 								onKeyDown={(e) => {
+									// Arrow keys move the square cursor (#315); the cursor is
+									// clamped to the grid so screen-reader users never lose
+									// their position.
+									if (
+										e.key === "ArrowUp" ||
+										e.key === "ArrowDown" ||
+										e.key === "ArrowLeft" ||
+										e.key === "ArrowRight"
+									) {
+										e.preventDefault();
+										e.stopPropagation();
+										const dRow = e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0;
+										const dCol = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+										moveCursor(actualRow + dRow, actualCol + dCol);
+										return;
+									}
 									// Enter/Space activate a square, mirroring a click, so the
-									// board is fully playable from the keyboard (#134).
+									// board is fully playable from the keyboard (#134, #315).
 									if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
 										e.preventDefault();
+										setCursor([actualRow, actualCol]);
+										announceCursor(actualRow, actualCol, false);
 										handleSquareClick(actualRow, actualCol);
 									}
 								}}

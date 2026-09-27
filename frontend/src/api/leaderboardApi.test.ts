@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { getLeaderboard, type LeaderboardEntry } from "./leaderboardApi";
+import {
+	getLeaderboard,
+	type LeaderboardCategory,
+	type LeaderboardEntry,
+} from "./leaderboardApi";
 
 const sampleEntry: LeaderboardEntry = {
 	rank: 1,
@@ -71,6 +75,35 @@ describe("getLeaderboard", () => {
 		});
 
 		await expect(getLeaderboard()).rejects.toThrow(/status 500/);
+	});
+
+	it("passes a time-control category as a query param (#316)", async () => {
+		const fetchMock = mockFetch({
+			ok: true,
+			status: 200,
+			json: async () => ({ success: true, data: [sampleEntry] }),
+		});
+
+		const categories: LeaderboardCategory[] = ["bullet", "blitz", "rapid"];
+		for (const category of categories) {
+			fetchMock.mockClear();
+			await getLeaderboard(category);
+			expect(fetchMock.mock.calls[0][0]).toContain(
+				`/leaderboard?category=${category}`,
+			);
+		}
+	});
+
+	it("treats \"all\" as no category filter", async () => {
+		const fetchMock = mockFetch({
+			ok: true,
+			status: 200,
+			json: async () => ({ success: true, data: [] }),
+		});
+
+		await getLeaderboard("all");
+
+		expect(fetchMock.mock.calls[0][0]).toMatch(/\/leaderboard$/);
 	});
 
 	it("propagates a network error", async () => {

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Upload, Hash, X, Loader2, GitBranch, Gauge } from "lucide-react";
+import { ArrowLeft, Upload, Hash, X, Loader2, GitBranch, Gauge, FileUp } from "lucide-react";
 import MoveNavigator from "../components/MoveNavigator";
 import PromotionModal from "../components/PromotionModal";
 import { useToastStore } from "../store/toastStore";
@@ -19,12 +19,33 @@ import {
 	applyMove,
 	squareToAlgebraic,
 } from "../utils/chessUtils";
-import { loadPgn, PgnParseError, type ReplayedMove } from "../utils/pgnParser";
+import {
+	loadPgn,
+	splitPgnGames,
+	PgnParseError,
+	type ReplayedMove,
+} from "../utils/pgnParser";
 
 const PIECE_SYMBOLS: Record<string, string> = {
 	K: "♔", Q: "♕", R: "♖", B: "♗", N: "♘", P: "♙",
 	k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟",
 };
+
+/** A game extracted from a dropped PGN file, replayed lazily on selection. */
+interface PgnFileGame {
+	headers: Record<string, string>;
+	pgn: string;
+}
+
+/** Builds the dropdown label for an extracted PGN game. */
+function gameLabel(game: PgnFileGame, index: number): string {
+	const white = game.headers.White;
+	const black = game.headers.Black;
+	if (white && black) return `${index + 1}. ${white} vs ${black}`;
+	const event = game.headers.Event;
+	if (event) return `${index + 1}. ${event}`;
+	return `Game ${index + 1}`;
+}
 
 const WHITE_PIECE_STYLE: React.CSSProperties = {
 	color: "#ffffff",
@@ -74,6 +95,15 @@ export default function AnalysisPage() {
 	const [pgnInput, setPgnInput] = useState("");
 	const [matchIdInput, setMatchIdInput] = useState("");
 	const [loadingMatch, setLoadingMatch] = useState(false);
+
+	// ── PGN drag-and-drop upload (#318) ──────────────────────────────
+	// Dropping a .pgn file on the window loads it directly; collections with
+	// several games show a selector so one game can be chosen for analysis.
+	const [isDragOver, setIsDragOver] = useState(false);
+	const [fileGames, setFileGames] = useState<PgnFileGame[]>([]);
+	const [selectedFileGame, setSelectedFileGame] = useState(0);
+	const [loadingFile, setLoadingFile] = useState(false);
+	const dragDepth = useRef(0);
 
 	// ── Move accuracy analysis (#313) ────────────────────────────────────────
 	// Evaluates every mainline position with Stockfish and classifies each
@@ -256,6 +286,134 @@ export default function AnalysisPage() {
 		}
 	};
 
+	// Applies a game extracted from a dropped file: replays its moves into
+	// the analysis tree. Shared by the instant single-game load and the
+	// multi-game selector so both paths behave identically. The selector is
+	// kept visible when the file holds several games so the player can
+	// switch between them.
+	const applyFileGame = useCallback(
+		(game: PgnFileGame, keepSelector = false) => {
+			try {
+				const parsed = loadPgn(game.pgn);
+				setHeaders(parsed.headers);
+				setResult(parsed.result);
+				setMoves(parsed.moves);
+				setCurrentIndex(-1);
+				setBranch(null);
+				setSelectedSquare(null);
+				if (!keepSelector) setFileGames([]);
+				addToast(`Imported ${parsed.moves.length} moves`, "success");
+			} catch (err) {
+				addToast(
+					err instanceof PgnParseError
+						? err.message
+						: "Failed to parse PGN file",
+					"error",
+				);
+			}
+		},
+		[addToast],
+	);
+
+	const handleFileGameSelect = (index: number) => {
+		setSelectedFileGame(index);
+		const game = fileGames[index];
+		if (game) applyFileGame(game, true);
+	};
+
+	const readFileAsGames = useCallback(
+		(file: File) => {
+			setLoadingFile(true);
+			const reader = new FileReader();
+			reader.onerror = () => {
+				setLoadingFile(false);
+				addToast(`Could not read ${file.name}`, "error");
+			};
+			reader.onload = () => {
+				setLoadingFile(false);
+				const text = typeof reader.result === "string" ? reader.result : "";
+				if (!text.trim()) {
+					addToast(`${file.name} is empty`, "error");
+					return;
+				}
+				const games = splitPgnGames(text);
+				if (games.length === 0) {
+					addToast(`${file.name} contains no games`, "error");
+					return;
+				}
+				if (games.length === 1) {
+					applyFileGame(games[0]);
+					return;
+				}
+				// Collection: show the selector and load the first game right
+				// away. A corrupt game surfaces the parse error on selection.
+				setFileGames(games);
+				setSelectedFileGame(0);
+				addToast(
+					`${games.length} games found — pick one to analyze`,
+					"success",
+				);
+				applyFileGame(games[0], true);
+			};
+			reader.readAsText(file);
+		},
+		[addToast, applyFileGame],
+	);
+
+	// Dragover must be cancelled on the window so the browser does not
+	// navigate away to open the file; the counter tracks nested targets so
+	// crossing child elements never flickers the highlight off.
+	useEffect(() => {
+		const hasPgnFile = (e: DragEvent) =>
+			Array.from(e.dataTransfer?.files ?? []).some(
+				(f) =>
+					f.name.toLowerCase().endsWith(".pgn") ||
+					f.type.startsWith("text/") ||
+					f.type === "",
+				);
+
+		const onDragOver = (e: DragEvent) => {
+			if (!hasPgnFile(e)) return;
+			e.preventDefault();
+		};
+		const onDragEnter = (e: DragEvent) => {
+			if (!hasPgnFile(e)) return;
+			e.preventDefault();
+			dragDepth.current += 1;
+			setIsDragOver(true);
+		};
+		const onDragLeave = (e: DragEvent) => {
+			if (!hasPgnFile(e)) return;
+			e.preventDefault();
+			dragDepth.current = Math.max(0, dragDepth.current - 1);
+			if (dragDepth.current === 0) setIsDragOver(false);
+		};
+		const onDrop = (e: DragEvent) => {
+			if (!hasPgnFile(e)) return;
+			e.preventDefault();
+			dragDepth.current = 0;
+			setIsDragOver(false);
+			const file = Array.from(e.dataTransfer?.files ?? []).find(
+				(f) =>
+					f.name.toLowerCase().endsWith(".pgn") ||
+					f.type.startsWith("text/") ||
+					f.type === "",
+				);
+			if (file) readFileAsGames(file);
+		};
+
+		window.addEventListener("dragover", onDragOver);
+		window.addEventListener("dragenter", onDragEnter);
+		window.addEventListener("dragleave", onDragLeave);
+		window.addEventListener("drop", onDrop);
+		return () => {
+			window.removeEventListener("dragover", onDragOver);
+			window.removeEventListener("dragenter", onDragEnter);
+			window.removeEventListener("dragleave", onDragLeave);
+			window.removeEventListener("drop", onDrop);
+		};
+	}, [readFileAsGames]);
+
 	// ── Match ID loader ─────────────────────────────────────────────────────
 	const handleLoadMatch = async () => {
 		const code = matchIdInput.trim();
@@ -302,6 +460,20 @@ export default function AnalysisPage() {
 		<div className="h-dvh w-dvw overflow-hidden flex flex-col bg-(--bg) p-2 gap-2">
 			{promotionPending && <PromotionModal color={turnToMove} onSelect={handlePromote} />}
 
+			{/* ── PGN drag-and-drop overlay (#318) ── */}
+			{isDragOver && (
+				<div
+					className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-2 bg-black/60 border-4 border-dashed border-(--accent-primary) pointer-events-none"
+					role="status"
+				>
+					<FileUp size={40} className="text-(--accent-primary)" aria-hidden="true" />
+					<p className="text-lg font-bold">Drop PGN to analyze</p>
+					<p className="text-xs text-(--text-secondary)">
+						Single games load instantly · collections offer a selector
+					</p>
+				</div>
+			)}
+
 			{showPgnModal && (
 				<div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
 					<div className="bg-(--bg) border border-(--border) rounded-2xl p-4 w-full max-w-lg flex flex-col gap-3">
@@ -347,6 +519,21 @@ export default function AnalysisPage() {
 					>
 						<Upload size={13} /> Paste PGN
 					</button>
+					<label
+						className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-(--bg) border border-(--border) hover:border-(--accent-primary)/60 text-xs font-semibold transition-colors cursor-pointer"
+					>
+						<FileUp size={13} aria-hidden="true" /> Drop/browse PGN
+						<input
+							type="file"
+							accept=".pgn,text/plain"
+							className="sr-only"
+							onChange={(e) => {
+								const file = e.target.files?.[0];
+								if (file) readFileAsGames(file);
+								e.target.value = "";
+							}}
+						/>
+					</label>
 					<div className="flex items-center gap-1">
 						<Hash size={12} className="text-(--text-tertiary) shrink-0" />
 						<input
@@ -418,6 +605,35 @@ export default function AnalysisPage() {
 				</div>
 
 				<div className="md:w-72 shrink-0 flex flex-col gap-2 min-h-0">
+					{/* ── Multi-game selector (#318) ── */}
+					{fileGames.length > 0 && (
+						<div className="shrink-0 rounded-xl bg-(--bg-secondary) border border-(--accent-primary)/40 p-2 flex items-center gap-2">
+							<FileUp
+								size={11}
+								className="text-(--accent-primary) shrink-0"
+								aria-hidden="true"
+							/>
+							<select
+								aria-label="Select game from PGN file"
+								value={selectedFileGame}
+								onChange={(e) => handleFileGameSelect(Number(e.target.value))}
+								className="flex-1 min-w-0 bg-(--bg) border border-(--border) rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-(--accent-primary)/60"
+							>
+								{fileGames.map((game, i) => (
+									<option key={`${game.pgn.slice(0, 32)}-${i}`} value={i}>
+										{gameLabel(game, i)}
+									</option>
+								))}
+							</select>
+							{loadingFile && (
+								<Loader2
+									size={13}
+									className="animate-spin text-(--text-tertiary) shrink-0"
+								/>
+							)}
+						</div>
+					)}
+
 					<MoveNavigator
 						currentMoveIndex={currentIndex}
 						totalMoves={moves.length}
@@ -455,7 +671,8 @@ export default function AnalysisPage() {
 					<div className="flex-1 min-h-0 overflow-y-auto rounded-xl bg-(--bg-secondary) border border-(--border)">
 						{moves.length === 0 ? (
 							<p className="text-xs text-(--text-tertiary) text-center p-4">
-								Paste a PGN or load a match code to begin.
+								Paste a PGN, drop a .pgn file, or load a match code to
+								begin.
 							</p>
 						) : (
 							<table className="w-full text-xs font-mono">

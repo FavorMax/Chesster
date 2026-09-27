@@ -1,7 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeft, Crown, Medal, RefreshCw, Trophy } from "lucide-react";
-import { getLeaderboard, type LeaderboardEntry } from "../api/leaderboardApi";
+import {
+	ArrowLeft,
+	Crosshair,
+	Crown,
+	Medal,
+	RefreshCw,
+	Trophy,
+} from "lucide-react";
+import {
+	getLeaderboard,
+	type LeaderboardCategory,
+	type LeaderboardEntry,
+} from "../api/leaderboardApi";
+import { useWalletStore } from "../store/walletStore";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const shortenAddress = (addr: string) =>
@@ -22,6 +34,18 @@ const displayName = (entry: LeaderboardEntry) =>
 		? entry.username
 		: shortenAddress(entry.address);
 
+/** Time-control filter tabs (#316); "all" shows the global ranking. */
+const CATEGORIES: {
+	value: LeaderboardCategory;
+	label: string;
+	hint: string;
+}[] = [
+	{ value: "all", label: "All", hint: "Every time control" },
+	{ value: "bullet", label: "Bullet", hint: "Games under 3 minutes" },
+	{ value: "blitz", label: "Blitz", hint: "Games of 3-10 minutes" },
+	{ value: "rapid", label: "Rapid", hint: "Games of 10-60 minutes" },
+];
+
 /** Medal colour for the top three ranks; later ranks show the plain number. */
 function RankBadge({ rank }: { rank: number }) {
 	if (rank === 1)
@@ -37,6 +61,9 @@ export default function LeaderboardPage() {
 	const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	// Active time-control filter (#316).
+	const [category, setCategory] = useState<LeaderboardCategory>("all");
+	const walletAddress = useWalletStore((s) => s.address);
 
 	// Manual refresh (button handler): setting state synchronously here is fine
 	// because it runs from an event, not from an effect body.
@@ -44,20 +71,20 @@ export default function LeaderboardPage() {
 		setLoading(true);
 		setError(null);
 		try {
-			const data = await getLeaderboard();
+			const data = await getLeaderboard(category);
 			setEntries(data);
 		} catch {
 			setError("Could not load the leaderboard. Please try again.");
 		} finally {
 			setLoading(false);
 		}
-	}, []);
+	}, [category]);
 
 	// Initial fetch on mount. State is updated only in the async callbacks (after
 	// the request settles), never synchronously in the effect body.
 	useEffect(() => {
 		let cancelled = false;
-		getLeaderboard()
+		getLeaderboard(category)
 			.then((data) => {
 				if (!cancelled) setEntries(data);
 			})
@@ -71,7 +98,13 @@ export default function LeaderboardPage() {
 		return () => {
 			cancelled = true;
 		};
-	}, []);
+	}, [category]);
+
+	const myEntry = useMemo(
+		() => entries.find((e) => e.address === walletAddress) ?? null,
+		[entries, walletAddress],
+	);
+	const topThree = entries.slice(0, 3);
 
 	return (
 		<main className="min-h-screen bg-(--bg) text-(--text) px-4 py-6 sm:px-6 lg:px-8">
@@ -107,6 +140,33 @@ export default function LeaderboardPage() {
 					Top ranked players by Elo rating, win rate, and total XLM earnings.
 				</p>
 
+				{/* ── Time-control filter tabs (#316) ── */}
+				<div
+					role="group"
+					aria-label="Filter by time control"
+					className="flex flex-wrap gap-1 rounded-xl border border-(--border) bg-(--bg-secondary) p-1 mb-6 w-fit"
+				>
+					{CATEGORIES.map((c) => {
+						const active = category === c.value;
+						return (
+							<button
+								key={c.value}
+								type="button"
+								aria-pressed={active}
+								title={c.hint}
+								onClick={() => setCategory(c.value)}
+								className={`px-3 py-1.5 text-sm font-semibold rounded-lg transition-colors ${
+									active
+										? "bg-(--accent-dark) text-white"
+										: "text-(--text-secondary) hover:bg-(--bg-tertiary)"
+								}`}
+							>
+								{c.label}
+							</button>
+						);
+					})}
+				</div>
+
 				{/* States */}
 				{loading ? (
 					<div
@@ -137,6 +197,40 @@ export default function LeaderboardPage() {
 					</div>
 				) : (
 					<>
+						{/* ── Top-3 podium (#316) ── */}
+						{topThree.length > 0 && (
+							<ol
+								className="flex items-end justify-center gap-2 sm:gap-4 mb-6"
+								aria-label="Top three players"
+							>
+								{topThree.map((entry) => (
+									<li
+										key={entry.address}
+										className={`flex-1 max-w-40 rounded-xl border p-3 text-center ${
+											entry.rank === 1
+												? "order-2 -translate-y-2 border-yellow-400/60 bg-yellow-400/10"
+												: entry.rank === 2
+													? "order-1 border-(--border) bg-(--bg-secondary)"
+													: "order-3 border-(--border) bg-(--bg-secondary)"
+										}`}
+									>
+										<div className="flex justify-center mb-1">
+											<RankBadge rank={entry.rank} />
+										</div>
+										<p
+											className="font-semibold text-sm truncate"
+											title={displayName(entry)}
+										>
+											{displayName(entry)}
+										</p>
+										<p className="text-xs text-(--text-tertiary) tabular-nums">
+											{entry.elo} Elo · {formatWinRate(entry.winRate)}
+										</p>
+									</li>
+								))}
+							</ol>
+						)}
+
 						{/* Table on sm+ screens */}
 						<div className="hidden sm:block overflow-x-auto rounded-xl border border-(--border)">
 							<table className="w-full text-sm">
@@ -166,10 +260,14 @@ export default function LeaderboardPage() {
 									</tr>
 								</thead>
 								<tbody>
-									{entries.map((entry) => (
+									{entries.map((entry) => {
+											const isMe = myEntry !== null && entry.address === myEntry.address;
+											return (
 										<tr
 											key={entry.address}
-											className="border-t border-(--border) hover:bg-(--bg-secondary)/60 transition-colors"
+											className={`border-t border-(--border) hover:bg-(--bg-secondary)/60 transition-colors ${
+												isMe ? "bg-yellow-400/10 hover:bg-yellow-400/15" : ""
+											}`}
 										>
 											<td className="px-4 py-3">
 												<span className="flex items-center justify-center w-6">
@@ -192,7 +290,8 @@ export default function LeaderboardPage() {
 												{formatXLM(entry.totalEarnings)} XLM
 											</td>
 										</tr>
-									))}
+										);
+										})}
 								</tbody>
 							</table>
 						</div>
@@ -200,10 +299,14 @@ export default function LeaderboardPage() {
 						{/* Card list on mobile */}
 						<ul className="sm:hidden flex flex-col gap-3">
 							{entries.map((entry) => (
-								<li
-									key={entry.address}
-									className="rounded-xl border border-(--border) bg-(--bg-secondary) p-4"
-								>
+							<li
+								key={entry.address}
+								className={`rounded-xl border p-4 ${
+									myEntry !== null && entry.address === myEntry.address
+										? "border-yellow-400/50 bg-yellow-400/10"
+										: "border-(--border) bg-(--bg-secondary)"
+								}`}
+							>
 									<div className="flex items-center justify-between mb-2">
 										<div className="flex items-center gap-2 font-semibold">
 											<RankBadge rank={entry.rank} />
@@ -228,6 +331,29 @@ export default function LeaderboardPage() {
 								</li>
 							))}
 						</ul>
+
+						{/* ── Your rank (#316) ── */}
+						{myEntry && (
+							<div className="sticky bottom-4 z-10 mt-6 flex items-center justify-between gap-3 rounded-xl border border-yellow-400/50 bg-(--bg-secondary) px-4 py-3 shadow-lg">
+								<p className="flex items-center gap-2 font-semibold text-sm min-w-0">
+									<Crosshair
+										size={16}
+										className="text-yellow-400 shrink-0"
+										aria-hidden="true"
+									/>
+									<span className="truncate">Your rank</span>
+								</p>
+								<p className="flex items-center gap-3 text-sm tabular-nums shrink-0">
+									<span className="font-bold">#{myEntry.rank}</span>
+									<span className="text-(--text-tertiary) truncate max-w-32">
+										{displayName(myEntry)}
+									</span>
+									<span className="text-(--text-tertiary)">
+										{myEntry.elo} Elo
+									</span>
+								</p>
+							</div>
+						)}
 					</>
 				)}
 			</div>
