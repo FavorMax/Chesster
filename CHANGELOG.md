@@ -1,3 +1,10 @@
+# [1.27.0](https://github.com/Kaycee276/Chesster/compare/v1.26.0...v1.27.0) (2026-09-27)
+
+
+### Features
+
+* **backend:** Implement Real-Time Socket.io Tournament Lifecycle Events ([8d40f80](https://github.com/Kaycee276/Chesster/commit/8d40f80de44653664e82450e121732fd548adb73))
+
 # [1.26.0](https://github.com/Kaycee276/Chesster/compare/v1.25.0...v1.26.0) (2026-09-27)
 
 
