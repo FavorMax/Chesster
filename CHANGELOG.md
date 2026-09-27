@@ -1,3 +1,10 @@
+# [1.28.0](https://github.com/Kaycee276/Chesster/compare/v1.27.0...v1.28.0) (2026-09-27)
+
+
+### Features
+
+* **security:** resolve multiple assigned security tasks (closes [#323](https://github.com/Kaycee276/Chesster/issues/323), closes [#324](https://github.com/Kaycee276/Chesster/issues/324), closes [#325](https://github.com/Kaycee276/Chesster/issues/325), closes [#326](https://github.com/Kaycee276/Chesster/issues/326)) ([d05e842](https://github.com/Kaycee276/Chesster/commit/d05e842c69213d89f331af4530f885186fa304ce))
+
 # [1.27.0](https://github.com/Kaycee276/Chesster/compare/v1.26.0...v1.27.0) (2026-09-27)
 
 
