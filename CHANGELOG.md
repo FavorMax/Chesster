@@ -1,3 +1,10 @@
+# [1.26.0](https://github.com/Kaycee276/Chesster/compare/v1.25.0...v1.26.0) (2026-09-27)
+
+
+### Features
+
+* **db:** [#319](https://github.com/Kaycee276/Chesster/issues/319) player_rating_history table, [#320](https://github.com/Kaycee276/Chesster/issues/320) referral_program and claimable_commission_ledger tables ([db5d00c](https://github.com/Kaycee276/Chesster/commit/db5d00c41ccb4f0ccded0b0e372d0fc37112c344))
+
 # [1.25.0](https://github.com/Kaycee276/Chesster/compare/v1.24.0...v1.25.0) (2026-09-27)
 
 
