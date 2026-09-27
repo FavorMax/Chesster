@@ -174,6 +174,10 @@ jobs:
       - name: Run Contract Tests
         run: cargo test
 
+      - name: Run Soroban Contract Property Fuzz Tests
+        run: cargo test --release -p escrow fuzz_balance_conservation -- --ignored
+        timeout-minutes: 5
+
       - name: Build & Optimize Contract
         run: make optimize
 

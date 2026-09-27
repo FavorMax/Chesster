@@ -3,6 +3,10 @@
 extern crate alloc;
 
 use super::*;
+use proptest::{
+    prelude::*,
+    test_runner::{Config as ProptestConfig, TestRunner},
+};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::token::StellarAssetClient as TokenAdminClient;
 use soroban_sdk::{
@@ -610,6 +614,80 @@ fn test_tournament_eight_player_payout_conserves_pool() {
     assert_eq!(token.balance(&treasury_vault), 4);
     assert_eq!(token.balance(&contract_id), 0);
     assert_eq!(client.get_escrowed_balance(&token.address), 0);
+}
+
+#[test]
+#[ignore = "runs 5,000 randomized settlement scenarios in contracts CI"]
+fn fuzz_balance_conservation() {
+    let scenario = (
+        1i128..=(i128::MAX / 2),
+        0u32..=10_000,
+        0u32..=500,
+    );
+    let mut runner = TestRunner::new(ProptestConfig::with_cases(5_000));
+
+    runner
+        .run(&scenario, |(buy_in, first_winner_bps, fee_bps)| {
+            let second_winner_bps = 10_000 - first_winner_bps;
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let player1 = Address::generate(&env);
+            let player2 = Address::generate(&env);
+            let token_admin = Address::generate(&env);
+            let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+
+            token_admin_client.mint(&player1, &buy_in);
+            token_admin_client.mint(&player2, &buy_in);
+
+            let contract_id = env.register(ChessterEscrow, ());
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &0);
+            client.set_tournament_fee_bps(&fee_bps);
+            client.add_supported_token(&token.address);
+
+            approve(&env, &token, &player1, &contract_id, buy_in);
+            approve(&env, &token, &player2, &contract_id, buy_in);
+
+            let tournament_id = String::from_str(&env, "FUZZ_CONSERVATION");
+            client.create_tournament(&tournament_id, &buy_in, &2, &2, &0, &token.address);
+            client.join_tournament(&tournament_id, &player1);
+            client.join_tournament(&tournament_id, &player2);
+
+            let total_pool = buy_in * 2;
+            let tournament = client.get_tournament(&tournament_id);
+            prop_assert_eq!(tournament.players.len(), 2);
+            prop_assert_eq!(tournament.total_pool, total_pool);
+
+            let winners = vec![&env, player1.clone(), player2.clone()];
+            let payout_bps = vec![&env, first_winner_bps, second_winner_bps];
+            client.complete_tournament(&tournament_id, &winners, &payout_bps);
+
+            let rake = (total_pool / BPS_DENOMINATOR) * fee_bps as i128
+                + ((total_pool % BPS_DENOMINATOR) * fee_bps as i128) / BPS_DENOMINATOR;
+            let net_pool = total_pool - rake;
+            let first_payout = (net_pool / BPS_DENOMINATOR) * first_winner_bps as i128
+                + ((net_pool % BPS_DENOMINATOR) * first_winner_bps as i128)
+                    / BPS_DENOMINATOR;
+            let second_payout = net_pool - first_payout;
+            let player1_balance = token.balance(&player1);
+            let player2_balance = token.balance(&player2);
+            let coordinator_balance = token.balance(&coordinator);
+
+            prop_assert_eq!(player1_balance, first_payout);
+            prop_assert_eq!(player2_balance, second_payout);
+            prop_assert_eq!(coordinator_balance, rake);
+            prop_assert_eq!(token.balance(&contract_id), 0);
+            prop_assert_eq!(client.get_escrowed_balance(&token.address), 0);
+            prop_assert_eq!(
+                player1_balance + player2_balance + coordinator_balance,
+                total_pool
+            );
+
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]
