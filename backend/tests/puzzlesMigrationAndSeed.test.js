@@ -1,4 +1,4 @@
-﻿const { puzzlesData } = require("../database/seeds/seedPuzzles");
+const { puzzlesData } = require("../database/seeds/seedPuzzles");
 
 describe("Chess Puzzles Seed & Schema Verification (Issue #321)", () => {
 	test("puzzlesData contains exactly 100 tactical puzzles", () => {

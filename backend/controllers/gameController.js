@@ -334,6 +334,9 @@ class GameController {
 				startedAt: game.game_started_at || null,
 			},
 		}, scheduleNext);
+	}
+
+	/**
 	 * GET /api/games/:id/audit-export?format=json|csv&download=true (Issue #243)
 	 * Forensic audit package for dispute resolution. `:id` is the game UUID or
 	 * game code. Restricted to the match's two players and platform admins.

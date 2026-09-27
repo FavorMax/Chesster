@@ -1,4 +1,4 @@
-﻿-- Migration: 022_add_settle_game_stored_proc.sql
+-- Migration: 022_add_settle_game_stored_proc.sql
 -- Description: Stored procedure for atomic escrow state transition, match audit logging, and player stat counters (Issue #322)
 
 -- UP

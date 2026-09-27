@@ -1,4 +1,4 @@
-﻿const supabase = require("../config/supabase");
+const supabase = require("../config/supabase");
 const chessEngine = require("../services/chessEngine");
 const escrowService = require("../services/escrowService");
 const referralService = require("../services/referralService");

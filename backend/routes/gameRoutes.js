@@ -7,6 +7,7 @@ const {
 	enforceExistingGameGeoCompliance,
 } = require('../middleware/geoIpMiddleware');
 const { requireAuth } = require('../middleware/authMiddleware');
+const { detectTorAndProxy } = require('../middlewares/proxyDetection');
 
 /**
  * IP Rate limiter for match creation (Issue #151).
@@ -43,7 +44,7 @@ router.matchCreationLimiter = matchCreationLimiter;
  *       429:
  *         description: Rate limit exceeded
  */
-router.post('/games', enforceGeoCompliance, matchCreationLimiter, gameController.createGame);
+router.post('/games', enforceGeoCompliance, detectTorAndProxy(), matchCreationLimiter, gameController.createGame);
 
 /**
  * @openapi
@@ -118,7 +119,7 @@ router.get('/games', gameController.getGameHistory);
  *       400:
  *         description: Cannot join own game or game full
  */
-router.post('/games/:gameCode/join', enforceExistingGameGeoCompliance, gameController.joinGame);
+router.post('/games/:gameCode/join', enforceExistingGameGeoCompliance, detectTorAndProxy(), gameController.joinGame);
 
 /**
  * @openapi
@@ -392,6 +393,21 @@ router.get('/games/:gameCode/chat', gameController.getChatMessages);
  *         description: Game not found
  */
 router.get('/games/:id/stream', gameController.streamGameReplay);
+
+/**
+ * @openapi
+ * /api/games/{id}/audit-export:
+ *   get:
+ *     summary: Export full match audit package
+ *     tags: [Games]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
  *         description: Game UUID or game code
  *       - in: query
  *         name: format

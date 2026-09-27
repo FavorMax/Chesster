@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 /**
  * Idempotent Seed Script for Chess Puzzles Dataset (Issue #321)
  * Populates 100 tactical puzzles across beginner, intermediate, and advanced tiers.
