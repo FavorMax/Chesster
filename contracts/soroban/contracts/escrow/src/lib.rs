@@ -621,6 +621,15 @@ fn checked_mul_div(env: &Env, a: i128, b: i128, denom: i128) -> i128 {
     a.checked_mul(b)
         .map(|product| product / denom)
         .unwrap_or_else(|| panic_with_error!(env, EscrowError::Overflow))
+}
+
+fn mul_div_bps(amount: i128, bps: u32) -> i128 {
+    let bps = i128::from(bps);
+    let whole = (amount / BPS_DENOMINATOR).checked_mul(bps).unwrap();
+    let fraction = (amount % BPS_DENOMINATOR).checked_mul(bps).unwrap() / BPS_DENOMINATOR;
+    whole.checked_add(fraction).unwrap()
+}
+
 /// Payload for resolving a match via Ed25519 signature.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1105,7 +1114,7 @@ impl ChessterEscrow {
     /// # Returns
     /// * `(i128, i128)` - (net_prize, rake).
     pub fn calculate_tournament_rake(total_pool: i128, fee_bps: u32) -> (i128, i128) {
-        let rake = (total_pool * fee_bps as i128) / BPS_DENOMINATOR;
+        let rake = mul_div_bps(total_pool, fee_bps);
         let net_prize = total_pool - rake;
         (net_prize, rake)
     }
@@ -2667,9 +2676,6 @@ impl ChessterEscrow {
         } else {
             0
         };
-            let (winner_pay, admin_fee_calc) =
-                Self::calculate_discounted_fee(env.clone(), m.total_staked, w.clone());
-            admin_fee = admin_fee_calc;
 
         m.status = MatchStatus::Resolved;
         m.winner = winner.clone();
@@ -3786,11 +3792,6 @@ impl ChessterEscrow {
 
         tournament.players.push_back(player);
         tournament.total_pool = checked_add(&env, tournament.total_pool, tournament.buy_in_amount);
-        tournament.players.push_back(player.clone());
-        tournament.total_pool = tournament
-            .total_pool
-            .checked_add(tournament.buy_in_amount)
-            .unwrap();
 
         Self::add_locked(&env, &tournament.token, tournament.buy_in_amount);
 
@@ -3872,28 +3873,16 @@ impl ChessterEscrow {
         }
         let (net_pool, rake) = Self::calculate_tournament_rake(tournament.total_pool, fee_bps);
 
+        tournament.status = TournamentStatus::Completed;
+        tournament.final_rankings = winners.clone();
+        env.storage().persistent().set(&tournament_id, &tournament);
+        Self::bump_entry_ttl(&env, &tournament_id);
+
         let token_client = token::Client::new(&env, &tournament.token);
         if rake > 0 {
             token_client.transfer(&env.current_contract_address(), &fee_recipient, &rake);
         }
 
-        // --- EFFECTS: finalize tournament state before paying out prizes, per
-        // checks-effects-interactions. ---
-        tournament.status = TournamentStatus::Completed;
-        tournament.final_rankings = final_rankings.clone();
-        env.storage().persistent().set(&tournament_id, &tournament);
-        Self::bump_entry_ttl(&env, &tournament_id);
-
-        // --- INTERACTIONS: prize transfers after the tournament is marked
-        // completed, so a re-entrant call sees the final state. ---
-        for (i, winner) in final_rankings.iter().enumerate() {
-            if (i as u32) < tournament.prize_distribution.len() {
-                let prize = tournament.prize_distribution.get(i as u32).unwrap_or(0);
-                if prize > 0 {
-                    token_client.transfer(&env.current_contract_address(), &winner, &prize);
-                }
-            }
-        }
         let mut total_distributed: i128 = 0;
         let num_winners = winners.len();
         for i in 0..num_winners {
@@ -3902,9 +3891,7 @@ impl ChessterEscrow {
             let payout = if i == num_winners - 1 {
                 net_pool.checked_sub(total_distributed).unwrap()
             } else {
-                (net_pool.checked_mul(bps as i128).unwrap())
-                    .checked_div(10_000)
-                    .unwrap()
+                mul_div_bps(net_pool, bps)
             };
             total_distributed = total_distributed.checked_add(payout).unwrap();
 
@@ -3927,12 +3914,6 @@ impl ChessterEscrow {
 
         Self::sub_locked(&env, &tournament.token, tournament.total_pool);
         Self::assert_balance_invariant(&env, &tournament.token);
-
-        tournament.status = TournamentStatus::Completed;
-        tournament.final_rankings = winners.clone();
-
-        env.storage().persistent().set(&tournament_id, &tournament);
-        Self::bump_entry_ttl(&env, &tournament_id);
 
         env.events().publish(
             (symbol_short!("tourn_cmp"), tournament_id),
