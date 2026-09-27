@@ -1,27 +1,12 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { visualizer } from "rollup-plugin-visualizer";
 
-const analyzeBundle = process.env.ANALYZE === "true";
+const plugins: any[] = [react(), tailwindcss()];
 
 // https://vite.dev/config/
 export default defineConfig({
-	plugins: [
-		react(),
-		tailwindcss(),
-		...(analyzeBundle
-			? [
-					visualizer({
-						filename: "stats.html",
-						template: "treemap",
-						open: false,
-						gzipSize: true,
-						brotliSize: true,
-					})
-				]
-			: []),
-	],
+	plugins,
 	build: {
 		chunkSizeWarningLimit: 500,
 		rollupOptions: {
@@ -39,7 +24,8 @@ export default defineConfig({
 	},
 	test: {
 		globals: true,
-		environment: "jsdom",
+		environment: "node",
+		setupFiles: ["./src/test/setup.ts"],
 		exclude: ["**/node_modules/**", "**/e2e/**"],
 		coverage: {
 			provider: "v8",

@@ -24,7 +24,6 @@ class MockOscillator {
 	type: OscillatorType = "sine";
 	frequency = { setValueAtTime: vi.fn() };
 	connect = vi.fn().mockReturnThis();
-import { describe, it, expect, beforeEach, vi } from "vitest";
 
 // The test environment runs under Node, which has no `localStorage` or
 // `AudioContext` globals, so we stub minimal fakes before importing the
