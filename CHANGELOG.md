@@ -1,3 +1,23 @@
+# [1.24.0](https://github.com/Kaycee276/Chesster/compare/v1.23.0...v1.24.0) (2026-09-27)
+
+
+### Bug Fixes
+
+* **contracts:** reconcile EscrowError limits and format after upstream merge ([40dc134](https://github.com/Kaycee276/Chesster/commit/40dc134fcd3e60d1ce1276475d7cf9ca80afc4b6))
+* **contracts:** repair escrow test boundaries ([e6119ab](https://github.com/Kaycee276/Chesster/commit/e6119ab1d5f10ed13c8ecd979f83716197d6feba))
+* **escrow:** resolve clippy warnings and update wasm size budget limit ([8b66ec1](https://github.com/Kaycee276/Chesster/commit/8b66ec1363eb62eecb8a7a4d3e41d181b5329468))
+* repair corrupted ChessBoard and GameResultModal components ([e20b18d](https://github.com/Kaycee276/Chesster/commit/e20b18debb1f3c3d929ced4a78454d7a6769e798))
+
+
+### Features
+
+* add share match link QR code to game lobby ([44de0ef](https://github.com/Kaycee276/Chesster/commit/44de0ef1e1d3bc0e6182e631b4f6185556a31a99))
+* **contracts,backend:** implement escrow features for issues [#287](https://github.com/Kaycee276/Chesster/issues/287), [#288](https://github.com/Kaycee276/Chesster/issues/288), [#289](https://github.com/Kaycee276/Chesster/issues/289), and [#290](https://github.com/Kaycee276/Chesster/issues/290) ([4e35ce1](https://github.com/Kaycee276/Chesster/commit/4e35ce17a5416b47c3be1f8233a0bd080a8a05ff))
+* **contracts:** add multi-sig emergency admin recovery scheme ([e9264aa](https://github.com/Kaycee276/Chesster/commit/e9264aa48e9859da9125ad2921a37249cd73c908))
+* **contracts:** implement dynamic platform fee discount for staked token holders ([efda452](https://github.com/Kaycee276/Chesster/commit/efda452d67933e78d6058b61b36a90b529d4ef22))
+* **database:** implement puzzles schema, seed script, and atomic escrow settle procedure (closes [#321](https://github.com/Kaycee276/Chesster/issues/321), closes [#322](https://github.com/Kaycee276/Chesster/issues/322)) ([c758713](https://github.com/Kaycee276/Chesster/commit/c758713dec9cea5824382c23b30e12553e7a5c7a))
+* show wallet XLM/SAC balances in the navbar ([67e389a](https://github.com/Kaycee276/Chesster/commit/67e389a2af87078b94e544016b8e5ce27b65df9f))
+
 # [1.23.0](https://github.com/Kaycee276/Chesster/compare/v1.22.0...v1.23.0) (2026-09-26)
 
 
