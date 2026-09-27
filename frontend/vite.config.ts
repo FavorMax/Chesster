@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 
+const plugins: any[] = [react(), tailwindcss()];
+
 // https://vite.dev/config/
 export default defineConfig({
 	plugins: [
@@ -42,6 +44,18 @@ export default defineConfig({
 			},
 		}),
 	],
+	plugins,
+	build: {
+		chunkSizeWarningLimit: 500,
+		rollupOptions: {
+			output: {
+				manualChunks: {
+					vendor: ["react", "react-dom", "react-router-dom"],
+					stellar: ["@stellar/stellar-sdk", "@stellar/freighter-api"],
+				},
+			},
+		},
+	},
 	server: {
 		port: 3090,
 		// host: true,
@@ -49,6 +63,7 @@ export default defineConfig({
 	test: {
 		globals: true,
 		environment: "node",
+		setupFiles: ["./src/test/setup.ts"],
 		exclude: ["**/node_modules/**", "**/e2e/**"],
 		coverage: {
 			provider: "v8",
