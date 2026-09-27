@@ -12,6 +12,7 @@
     "build:analyze": "ANALYZE=true vite build",
     "size-check": "node scripts/check-bundle-size.mjs",
     "lint": "eslint .",
+    "lhci": "lhci autorun --config=../.lighthouserc.json",
     "preview": "vite preview",
     "test": "vitest run --passWithNoTests",
     "test:coverage": "vitest run --coverage --passWithNoTests"
@@ -33,6 +34,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@playwright/test": "^1.57.0",
+    "@lhci/cli": "^0.15.1",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^24.10.1",
     "@types/qrcode": "^1.5.6",
