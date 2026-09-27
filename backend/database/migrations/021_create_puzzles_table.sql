@@ -1,4 +1,4 @@
-﻿-- Migration: 021_create_puzzles_table.sql
+-- Migration: 021_create_puzzles_table.sql
 -- Description: Create chess_puzzles table and index for tactical category filtering (Issue #321)
 
 -- UP

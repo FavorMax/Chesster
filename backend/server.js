@@ -4,6 +4,7 @@ validateEnv();
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
@@ -24,6 +25,16 @@ const { moderateMessage, checkSlowMode } = require("./services/chatService");
 const { JWT_SECRET } = require("./middleware/authMiddleware");
 const { createSocketRateLimiter } = require("./middleware/socketRateLimiter");
 const { csrfProtection } = require("./middleware/csrfMiddleware");
+const {
+  validateSocketPayload,
+  JoinRoomPayload,
+  LeaveGameSchema,
+  SpectatorReactionSchema,
+  ReconnectGameSchema,
+  RequestRematchSchema,
+  SendChatSchema,
+  SpectatorMessageSchema,
+} = require("./validators/socketSchemas");
 const swaggerUi = require("swagger-ui-express");
 const swaggerDocument = require("./docs/swagger.json");
 
@@ -40,11 +51,16 @@ const io = new Server(server, {
   },
 });
 
-const { createAdapter } = require('@socket.io/redis-adapter');
+let createAdapter;
+try {
+  createAdapter = require('@socket.io/redis-adapter').createAdapter;
+} catch (e) {
+  createAdapter = null;
+}
 const { getPubSubClients } = require('./config/redis');
 
 const { pubClient, subClient } = getPubSubClients();
-if (pubClient && subClient) {
+if (createAdapter && pubClient && subClient) {
   io.adapter(createAdapter(pubClient, subClient));
   console.log('Socket.io Redis adapter connected');
 }
@@ -58,6 +74,35 @@ const socketHandshakeLimiter = createSocketRateLimiter({
 io.engine.use((req, res, next) => socketHandshakeLimiter(req, res, next));
 
 const PORT = process.env.PORT || 3001;
+
+// Strict Content Security Policy via Helmet (Issue #325)
+const isProduction = process.env.NODE_ENV === "production";
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: isProduction
+          ? ["'self'"]
+          : ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "blob:", "https:"],
+        connectSrc: [
+          "'self'",
+          "https://soroban-testnet.stellar.org",
+          "https://horizon-testnet.stellar.org",
+          "https://*.supabase.co",
+          "wss:",
+          "ws:",
+        ],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        upgradeInsecureRequests: isProduction ? [] : null,
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
 
 // Apply structured logging middleware
 app.use(logger.requestMiddleware());
@@ -123,8 +168,8 @@ function broadcastPresence(gameCode, color, status) {
 io.on("connection", (socket) => {
   // Accepts either a bare gameCode string (spectator join) or
   // { gameCode, playerColor } so we can track presence / handle reconnects.
-  socket.on("join-game", (payload) => {
-    const gameCode = typeof payload === "string" ? payload : payload?.gameCode;
+  socket.on("join-game", validateSocketPayload(JoinRoomPayload, (payload) => {
+    const gameCode = typeof payload === "string" ? payload : payload?.gameCode || payload?.gameId;
     const playerColor = typeof payload === "object" ? payload?.playerColor : null;
     if (!gameCode) return;
 
@@ -162,13 +207,16 @@ io.on("connection", (socket) => {
       white: presence.white.status,
       black: presence.black.status,
     });
-  });
+  }));
 
-  socket.on("leave-game", (gameCode) => {
-    socket.leave(gameCode);
-  });
+  socket.on("leave-game", validateSocketPayload(LeaveGameSchema, (gameCode) => {
+    const code = typeof gameCode === "string" ? gameCode : gameCode?.gameCode || gameCode?.gameId;
+    if (code) {
+      socket.leave(code);
+    }
+  }));
 
-  socket.on("spectator:reaction", ({ gameCode, emoji } = {}) => {
+  socket.on("spectator:reaction", validateSocketPayload(SpectatorReactionSchema, ({ gameCode, emoji } = {}) => {
     const allowedEmojis = new Set(["🔥", "👏", "♟️", "🤯", "💀"]);
     if (!gameCode || !allowedEmojis.has(emoji)) return;
 
@@ -184,7 +232,7 @@ io.on("connection", (socket) => {
       emoji,
       xOffset: 10 + Math.floor(Math.random() * 80),
     });
-  });
+  }));
 
   socket.on("disconnect", async () => {
     const { gameCode, playerColor } = socket.data || {};
@@ -212,7 +260,7 @@ io.on("connection", (socket) => {
     timerService.startReconnectGrace(gameCode, playerColor);
   });
 
-  socket.on("reconnect_game", async ({ gameId, walletAddress, token }, ack) => {
+  socket.on("reconnect_game", validateSocketPayload(ReconnectGameSchema, async ({ gameId, walletAddress, token }, ack) => {
     // Provide a clear ack callback for error/success responses
     const sendAck = (error, data) => {
       if (typeof ack === "function") {
@@ -351,15 +399,18 @@ io.on("connection", (socket) => {
       logger.error("reconnect_game handler error", { error: err.message, stack: err.stack });
       sendAck(err.message || "Reconnection failed");
     }
+  }));
+
   // Relay a rematch challenge to the opponent (Issue #254). No persisted
   // state — purely a transient notification between the two live sockets.
-  socket.on("request-rematch", ({ gameCode, playerColor }) => {
+  socket.on("request-rematch", validateSocketPayload(RequestRematchSchema, ({ gameCode, playerColor }) => {
     if (!gameCode || !["white", "black"].includes(playerColor)) return;
     socket.to(gameCode).emit("rematch-requested", { gameCode, playerColor });
-  });
+  }));
 
-  socket.on("send-chat", async ({ gameCode, playerColor, message }) => {
-    if (!gameCode || !playerColor || !message) return;
+  socket.on("send-chat", validateSocketPayload(SendChatSchema, async ({ gameCode, gameId, playerColor, message }) => {
+    const code = gameCode || gameId;
+    if (!code || !playerColor || !message) return;
     if (!["white", "black"].includes(playerColor)) return;
 
     const moderation = moderateMessage(message);
@@ -368,7 +419,7 @@ io.on("connection", (socket) => {
     const { data, error } = await supabase
       .from("chat_messages")
       .insert({
-        game_code: gameCode,
+        game_code: code,
         player_color: playerColor,
         message: moderation.message,
       })
@@ -376,14 +427,14 @@ io.on("connection", (socket) => {
       .single();
 
     if (!error && data) {
-      io.to(gameCode).emit("chat-message", {
+      io.to(code).emit("chat-message", {
         id: data.id,
         playerColor: data.player_color,
         message: data.message,
         createdAt: data.created_at,
       });
     }
-  });
+  }));
 
   /**
    * Spectator chat message handler (Issue #304).
@@ -396,7 +447,7 @@ io.on("connection", (socket) => {
    * never to the player game room. This ensures active players are shielded from
    * spectator chatter.
    */
-  socket.on("spectator_message", ({ gameCode, message }) => {
+  socket.on("spectator_message", validateSocketPayload(SpectatorMessageSchema, ({ gameCode, message }) => {
     if (!gameCode || !message) return;
 
     // Extract IP from socket.io handshake (matches HTTP rate-limiter convention)
@@ -430,7 +481,7 @@ io.on("connection", (socket) => {
       message: moderation.message,
       createdAt: new Date().toISOString(),
     });
-  });
+  }));
 });
 
 app.set("io", io);
