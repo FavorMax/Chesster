@@ -27,13 +27,26 @@ interface LeaderboardResponse {
 }
 
 /**
+ * Time-control buckets the leaderboard can be filtered by (#316).
+ * "all" is a UI-only value: the request is sent without a category param.
+ */
+export type LeaderboardCategory = "bullet" | "blitz" | "rapid" | "all";
+
+/**
  * Fetch the global leaderboard, ranked by the backend.
+ *
+ * `category` narrows results to a time-control bucket (bullet/blitz/rapid);
+ * when omitted or "all" the unfiltered global ranking is requested. The
+ * backend may not support the parameter yet — the UI degrades gracefully.
  *
  * Throws on network failure or a non-OK response so callers can render an
  * error state; returns an empty array when the backend reports no players.
  */
-export async function getLeaderboard(): Promise<LeaderboardEntry[]> {
-	const res = await fetch(`${API_URL}/leaderboard`);
+export async function getLeaderboard(
+	category?: LeaderboardCategory,
+): Promise<LeaderboardEntry[]> {
+	const qs = category && category !== "all" ? `?category=${category}` : "";
+	const res = await fetch(`${API_URL}/leaderboard${qs}`);
 	if (!res.ok) {
 		throw new Error(`Leaderboard request failed with status ${res.status}`);
 	}
