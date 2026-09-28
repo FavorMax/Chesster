@@ -1524,6 +1524,279 @@ fn test_gc_stale_single_match() {
 }
 
 #[test]
+fn test_gc_stale_matches_empty_batch() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500);
+
+    let empty_codes: Vec<String> = Vec::new(&env);
+    let cleaned = client.gc_stale_matches(&empty_codes);
+    assert_eq!(cleaned, 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #26)")]
+fn test_gc_stale_matches_exceeds_limit_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500);
+
+    let mut codes = Vec::new(&env);
+    for _ in 0..(MAX_BATCH_GC_MATCHES + 1) {
+        codes.push_back(String::from_str(&env, "OVER_LIMIT"));
+    }
+    client.gc_stale_matches(&codes);
+}
+
+#[test]
+fn test_gc_stale_matches_oversized_batch_fails_atomically() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let player1 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&player1, &1000);
+
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000_000;
+    });
+
+    let game_code = String::from_str(&env, "GC_ATOMIC_1");
+    approve(&env, &token, &player1, &contract_id, 1000);
+    client.create_match(&game_code, &player1, &token.address, &100);
+    client.request_cancellation(&game_code, &player1);
+
+    // Fast-forward past 30 days
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000_000 + (31 * 86400);
+    });
+
+    // Match is now stale and eligible. Put it first in an oversized batch.
+    let mut codes = Vec::new(&env);
+    codes.push_back(game_code.clone());
+    for _ in 0..MAX_BATCH_GC_MATCHES {
+        codes.push_back(String::from_str(&env, "DUMMY_EXTRA"));
+    }
+    assert_eq!(codes.len(), MAX_BATCH_GC_MATCHES + 1);
+
+    let result = client.try_gc_stale_matches(&codes);
+    assert!(result.is_err());
+
+    // Verify atomic failure: match was NOT deleted from storage
+    let m = client.try_get_match(&game_code);
+    assert!(m.is_ok());
+}
+
+#[test]
+fn test_gc_stale_matches_at_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&player1, &2000);
+    token_admin_client.mint(&player2, &2000);
+
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500);
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000_000;
+    });
+
+    // Create 2 eligible matches
+    let gc1 = String::from_str(&env, "AT_LIMIT_1");
+    let gc2 = String::from_str(&env, "AT_LIMIT_2");
+    approve(&env, &token, &player1, &contract_id, 2000);
+    approve(&env, &token, &player2, &contract_id, 2000);
+
+    client.create_match(&gc1, &player1, &token.address, &100);
+    client.join_match(&gc1, &player2);
+    client.resolve_match(&gc1, &Some(player1.clone()));
+
+    client.create_match(&gc2, &player1, &token.address, &100);
+    client.request_cancellation(&gc2, &player1);
+
+    // Fast-forward past 30 days
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000_000 + (31 * 86400);
+    });
+
+    // Create a batch of exactly MAX_BATCH_GC_MATCHES (25)
+    let mut codes = Vec::new(&env);
+    codes.push_back(gc1.clone());
+    codes.push_back(gc2.clone());
+    for _ in 2..MAX_BATCH_GC_MATCHES {
+        codes.push_back(String::from_str(&env, "UNKNOWN_CODE"));
+    }
+    assert_eq!(codes.len(), MAX_BATCH_GC_MATCHES);
+
+    let cleaned = client.gc_stale_matches(&codes);
+    assert_eq!(cleaned, 2);
+
+    assert!(client.try_get_match(&gc1).is_err());
+    assert!(client.try_get_match(&gc2).is_err());
+}
+
+#[test]
+fn test_gc_stale_matches_mixed_batch() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&player1, &5000);
+    token_admin_client.mint(&player2, &5000);
+
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500);
+
+    let base_time = 10_000_000;
+    env.ledger().with_mut(|li| {
+        li.timestamp = base_time;
+    });
+    approve(&env, &token, &player1, &contract_id, 5000);
+    approve(&env, &token, &player2, &contract_id, 5000);
+
+    // 1. Eligible old resolved match (> 30 days)
+    let gc_resolved_old = String::from_str(&env, "MIXED_RESOLVED_OLD");
+    client.create_match(&gc_resolved_old, &player1, &token.address, &100);
+    client.join_match(&gc_resolved_old, &player2);
+    client.resolve_match(&gc_resolved_old, &Some(player1.clone()));
+
+    // 2. Eligible old refunded match (> 30 days)
+    let gc_refunded_old = String::from_str(&env, "MIXED_REFUNDED_OLD");
+    client.create_match(&gc_refunded_old, &player1, &token.address, &100);
+    client.request_cancellation(&gc_refunded_old, &player1);
+
+    // 3. Recent resolved match (created 25 days later, so only 10 days old when advanced to 35 days)
+    env.ledger().with_mut(|li| {
+        li.timestamp = base_time + (25 * 86400);
+    });
+    let gc_resolved_recent = String::from_str(&env, "MIXED_RESOLVED_RECENT");
+    client.create_match(&gc_resolved_recent, &player1, &token.address, &100);
+    client.join_match(&gc_resolved_recent, &player2);
+    client.resolve_match(&gc_resolved_recent, &Some(player1.clone()));
+
+    // Advance ledger to 35 days after base_time
+    env.ledger().with_mut(|li| {
+        li.timestamp = base_time + (35 * 86400);
+    });
+
+    // 4. Active match (joined, not resolved/refunded)
+    let gc_active = String::from_str(&env, "MIXED_ACTIVE");
+    client.create_match(&gc_active, &player1, &token.address, &100);
+    client.join_match(&gc_active, &player2);
+
+    // 5. Pending match (not joined)
+    let gc_pending = String::from_str(&env, "MIXED_PENDING");
+    client.create_match(&gc_pending, &player1, &token.address, &100);
+
+    // 6. Unknown / nonexistent match
+    let gc_unknown = String::from_str(&env, "MIXED_NONEXISTENT");
+
+    let mixed_codes = vec![
+        &env,
+        gc_resolved_old.clone(),
+        gc_refunded_old.clone(),
+        gc_resolved_recent.clone(),
+        gc_active.clone(),
+        gc_pending.clone(),
+        gc_unknown.clone(),
+    ];
+
+    let cleaned = client.gc_stale_matches(&mixed_codes);
+    assert_eq!(cleaned, 2);
+
+    // Eligible entries removed
+    assert!(client.try_get_match(&gc_resolved_old).is_err());
+    assert!(client.try_get_match(&gc_refunded_old).is_err());
+
+    // Ineligible entries preserved
+    let m_recent = client.get_match(&gc_resolved_recent);
+    assert_eq!(m_recent.status, MatchStatus::Resolved);
+
+    let m_active = client.get_match(&gc_active);
+    assert_eq!(m_active.status, MatchStatus::Active);
+
+    let m_pending = client.get_match(&gc_pending);
+    assert_eq!(m_pending.status, MatchStatus::Pending);
+}
+
+#[test]
+fn test_gc_stale_matches_requires_coordinator_auth() {
+    let env = Env::default();
+    let coordinator = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &coordinator,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "init",
+            args: (&coordinator, 500u32).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    client.init(&coordinator, &500);
+
+    let codes = vec![&env, String::from_str(&env, "CODE1")];
+
+    // Attempt gc_stale_matches with attacker auth
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attacker,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "gc_stale_matches",
+            args: (codes.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_gc_stale_matches(&codes).is_err());
+
+    // Attempt single gc_stale_match with attacker auth
+    let code = String::from_str(&env, "CODE1");
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attacker,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "gc_stale_match",
+            args: (code.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(client.try_gc_stale_match(&code).is_err());
+}
+
+#[test]
 fn test_native_xlm_payment_wrapping() {
     let env = Env::default();
     env.mock_all_auths();
