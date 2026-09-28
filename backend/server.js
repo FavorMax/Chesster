@@ -4,6 +4,7 @@ validateEnv();
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const http = require("http");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
@@ -20,10 +21,30 @@ const eventConsumer = require("./workers/eventConsumer");
 const supabase = require("./config/supabase");
 const logger = require("./utils/logger");
 const { errorHandler, installGlobalHandlers } = require("./middleware/errorHandler");
+const { enforceHttps, enforceSecureSocket } = require("./middleware/enforceHttps");
+const { moderateMessage } = require("./services/chatService");
+const gameModel = require("./models/gameModel");
+const {
+  verifySocketToken,
+  resolvePlayerColor,
+  authorizeMove,
+} = require("./socket/moveAuthority");
+const { createRateLimiter } = require("./middleware/rateLimiter");
+const { sanitizeInput } = require("./middleware/sanitizeInput");
 const { moderateMessage, checkSlowMode } = require("./services/chatService");
 const { JWT_SECRET } = require("./middleware/authMiddleware");
 const { createSocketRateLimiter } = require("./middleware/socketRateLimiter");
 const { csrfProtection } = require("./middleware/csrfMiddleware");
+const {
+  validateSocketPayload,
+  JoinRoomPayload,
+  LeaveGameSchema,
+  SpectatorReactionSchema,
+  ReconnectGameSchema,
+  RequestRematchSchema,
+  SendChatSchema,
+  SpectatorMessageSchema,
+} = require("./validators/socketSchemas");
 const swaggerUi = require("swagger-ui-express");
 const swaggerDocument = require("./docs/swagger.json");
 
@@ -40,6 +61,20 @@ const io = new Server(server, {
   },
 });
 
+let createAdapter;
+try {
+  createAdapter = require('@socket.io/redis-adapter').createAdapter;
+} catch (e) {
+  createAdapter = null;
+}
+const { getPubSubClients } = require('./config/redis');
+
+const { pubClient, subClient } = getPubSubClients();
+if (createAdapter && pubClient && subClient) {
+  io.adapter(createAdapter(pubClient, subClient));
+  console.log('Socket.io Redis adapter connected');
+}
+
 // Rate limit WebSocket handshake/connection attempts per IP to prevent
 // connection-flooding DoS before a socket is ever allocated (Issue #244).
 const socketHandshakeLimiter = createSocketRateLimiter({
@@ -49,6 +84,45 @@ const socketHandshakeLimiter = createSocketRateLimiter({
 io.engine.use((req, res, next) => socketHandshakeLimiter(req, res, next));
 
 const PORT = process.env.PORT || 3001;
+
+// Trust the TLS-terminating proxy (Render/Nginx/LB) so req.protocol and the
+// X-Forwarded-Proto header can be used to enforce HTTPS in production.
+app.set("trust proxy", 1);
+
+// Redirect HTTP to HTTPS and emit HSTS in production (Issue #143). Registered
+// first so no downstream handler processes an insecure request.
+app.use(enforceHttps);
+
+// Reject insecure (non-wss) WebSocket handshakes in production (Issue #143).
+io.use(enforceSecureSocket());
+// Strict Content Security Policy via Helmet (Issue #325)
+const isProduction = process.env.NODE_ENV === "production";
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: isProduction
+          ? ["'self'"]
+          : ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "blob:", "https:"],
+        connectSrc: [
+          "'self'",
+          "https://soroban-testnet.stellar.org",
+          "https://horizon-testnet.stellar.org",
+          "https://*.supabase.co",
+          "wss:",
+          "ws:",
+        ],
+        fontSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        upgradeInsecureRequests: isProduction ? [] : null,
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
 
 // Apply structured logging middleware
 app.use(logger.requestMiddleware());
@@ -69,6 +143,16 @@ app.get("/api/csrf-token", (req, res) => {
 
 // Swagger API documentation (Issue #152)
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+// Security middleware: strip/reject malicious input before it reaches any route
+// handler, and rate-limit the API surface to blunt brute-forcing and DoS.
+app.use(sanitizeInput);
+
+const apiLimiter = createRateLimiter({
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_MAX) || 300,
+});
+app.use("/api", apiLimiter);
 
 // Mount routes
 app.use("/api", gameRoutes);
@@ -114,29 +198,55 @@ function broadcastPresence(gameCode, color, status) {
 io.on("connection", (socket) => {
   // Accepts either a bare gameCode string (spectator join) or
   // { gameCode, playerColor } so we can track presence / handle reconnects.
-  socket.on("join-game", (payload) => {
+  socket.on("join-game", async (payload) => {
     const gameCode = typeof payload === "string" ? payload : payload?.gameCode;
+    const requestedColor = typeof payload === "object" ? payload?.playerColor : null;
+    const token = typeof payload === "object" ? payload?.token : null;
+  socket.on("join-game", validateSocketPayload(JoinRoomPayload, (payload) => {
+    const gameCode = typeof payload === "string" ? payload : payload?.gameCode || payload?.gameId;
     const playerColor = typeof payload === "object" ? payload?.playerColor : null;
     if (!gameCode) return;
 
     socket.join(gameCode);
 
-    if (playerColor && ["white", "black"].includes(playerColor)) {
-      socket.data.gameCode = gameCode;
-      socket.data.playerColor = playerColor;
+    if (requestedColor && ["white", "black"].includes(requestedColor)) {
+      // Server authority: a socket may only be bound to a player color if a
+      // valid JWT proves it owns the wallet registered for that color in this
+      // game. Without proof the connection is treated as a spectator, so a
+      // spectator or attacker cannot impersonate a player over the socket.
+      let boundColor = null;
+      const claims = verifySocketToken(token);
+      if (claims) {
+        try {
+          const game = await gameModel.getGame(gameCode);
+          boundColor = resolvePlayerColor(game, claims.address);
+        } catch (err) {
+          boundColor = null;
+        }
+      }
 
-      const presence = getPresenceEntry(gameCode);
-      const wasReconnecting = timerService.isPendingForfeit(gameCode, playerColor);
+      if (boundColor === requestedColor) {
+        socket.data.gameCode = gameCode;
+        socket.data.playerColor = boundColor;
+        socket.data.address = claims.address;
 
-      // A same-color reconnect within the grace period cancels the pending
-      // auto-forfeit and resumes the game/session normally.
-      timerService.cancelReconnectGrace(gameCode, playerColor);
+        const presence = getPresenceEntry(gameCode);
+        const wasReconnecting = timerService.isPendingForfeit(gameCode, boundColor);
 
-      presence[playerColor].socketId = socket.id;
-      broadcastPresence(gameCode, playerColor, "online");
+        // A same-color reconnect within the grace period cancels the pending
+        // auto-forfeit and resumes the game/session normally.
+        timerService.cancelReconnectGrace(gameCode, boundColor);
 
-      if (wasReconnecting) {
-        socket.to(gameCode).emit("player-reconnected", { gameCode, color: playerColor });
+        presence[boundColor].socketId = socket.id;
+        broadcastPresence(gameCode, boundColor, "online");
+
+        if (wasReconnecting) {
+          socket.to(gameCode).emit("player-reconnected", { gameCode, color: boundColor });
+        }
+      } else {
+        // Requested a color the caller cannot prove ownership of: stay a
+        // spectator and let the client know the color binding was refused.
+        socket.emit("auth-error", { gameCode, reason: "color-authentication-failed" });
       }
     } else {
       // Spectator: join the spectator_chat room, never the player game room
@@ -153,13 +263,57 @@ io.on("connection", (socket) => {
       white: presence.white.status,
       black: presence.black.status,
     });
+  }));
+
+  // Server-authoritative move channel. The move is applied only when the socket
+  // was bound to a player color via an authenticated join and it is that
+  // player's turn in an active game; otherwise it is rejected without touching
+  // game state. This blocks socket injection and client-side move spoofing.
+  socket.on("make-move", async ({ gameCode, from, to, promotion } = {}) => {
+    if (!gameCode) return;
+
+    const boundColor = socket.data.playerColor;
+    if (!boundColor || socket.data.gameCode !== gameCode) {
+      socket.emit("move-rejected", { gameCode, reason: "not-a-player" });
+      return;
+    }
+
+    try {
+      const game = await gameModel.getGame(gameCode);
+      const gate = authorizeMove(game, boundColor);
+      if (!gate.ok) {
+        socket.emit("move-rejected", { gameCode, reason: gate.code, message: gate.message });
+        return;
+      }
+
+      const moverColor = game.current_turn;
+      const updated = await gameModel.makeMove(gameCode, from, to, promotion);
+
+      let clock = null;
+      if (updated.status === "active") {
+        clock = timerService.applyMove(gameCode, moverColor);
+      } else {
+        timerService.clearTimer(gameCode);
+        timerService.clearClock(gameCode);
+      }
+
+      io.to(gameCode).emit("game-update", { ...updated, clock });
+    } catch (err) {
+      socket.emit("move-rejected", { gameCode, reason: "invalid-move", message: err.message });
+    }
   });
 
   socket.on("leave-game", (gameCode) => {
     socket.leave(gameCode);
   });
+  socket.on("leave-game", validateSocketPayload(LeaveGameSchema, (gameCode) => {
+    const code = typeof gameCode === "string" ? gameCode : gameCode?.gameCode || gameCode?.gameId;
+    if (code) {
+      socket.leave(code);
+    }
+  }));
 
-  socket.on("spectator:reaction", ({ gameCode, emoji } = {}) => {
+  socket.on("spectator:reaction", validateSocketPayload(SpectatorReactionSchema, ({ gameCode, emoji } = {}) => {
     const allowedEmojis = new Set(["🔥", "👏", "♟️", "🤯", "💀"]);
     if (!gameCode || !allowedEmojis.has(emoji)) return;
 
@@ -175,9 +329,9 @@ io.on("connection", (socket) => {
       emoji,
       xOffset: 10 + Math.floor(Math.random() * 80),
     });
-  });
+  }));
 
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     const { gameCode, playerColor } = socket.data || {};
     if (!gameCode || !playerColor) return;
 
@@ -186,15 +340,24 @@ io.on("connection", (socket) => {
     // fresher reconnect (e.g. rapid refresh / duplicate tabs).
     if (presence[playerColor].socketId !== socket.id) return;
 
+    try {
+      const gameModel = require("./models/gameModel");
+      const game = await gameModel.getGame(gameCode);
+      if (!game || game.status !== "active") return;
+    } catch (e) {
+      return;
+    }
+
     presence[playerColor].socketId = null;
     broadcastPresence(gameCode, playerColor, "reconnecting");
+    io.to(gameCode).emit('player_status', { color: playerColor, status: 'disconnected', graceMs: 60 * 1000 });
 
     // Give the player a 60-second grace period to reconnect before the
     // match is auto-forfeited on their behalf (see timerService).
     timerService.startReconnectGrace(gameCode, playerColor);
   });
 
-  socket.on("reconnect_game", async ({ gameId, walletAddress, token }, ack) => {
+  socket.on("reconnect_game", validateSocketPayload(ReconnectGameSchema, async ({ gameId, walletAddress, token }, ack) => {
     // Provide a clear ack callback for error/success responses
     const sendAck = (error, data) => {
       if (typeof ack === "function") {
@@ -324,6 +487,7 @@ io.on("connection", (socket) => {
         color: playerColor,
         timestamp: new Date().toISOString(),
       });
+      socket.to(gameId).emit('player_status', { color: playerColor, status: 'reconnected' });
 
       // Confirm success via ack
       sendAck(null, { success: true, gameId, playerColor });
@@ -332,15 +496,18 @@ io.on("connection", (socket) => {
       logger.error("reconnect_game handler error", { error: err.message, stack: err.stack });
       sendAck(err.message || "Reconnection failed");
     }
+  }));
+
   // Relay a rematch challenge to the opponent (Issue #254). No persisted
   // state — purely a transient notification between the two live sockets.
-  socket.on("request-rematch", ({ gameCode, playerColor }) => {
+  socket.on("request-rematch", validateSocketPayload(RequestRematchSchema, ({ gameCode, playerColor }) => {
     if (!gameCode || !["white", "black"].includes(playerColor)) return;
     socket.to(gameCode).emit("rematch-requested", { gameCode, playerColor });
-  });
+  }));
 
-  socket.on("send-chat", async ({ gameCode, playerColor, message }) => {
-    if (!gameCode || !playerColor || !message) return;
+  socket.on("send-chat", validateSocketPayload(SendChatSchema, async ({ gameCode, gameId, playerColor, message }) => {
+    const code = gameCode || gameId;
+    if (!code || !playerColor || !message) return;
     if (!["white", "black"].includes(playerColor)) return;
 
     const moderation = moderateMessage(message);
@@ -349,7 +516,7 @@ io.on("connection", (socket) => {
     const { data, error } = await supabase
       .from("chat_messages")
       .insert({
-        game_code: gameCode,
+        game_code: code,
         player_color: playerColor,
         message: moderation.message,
       })
@@ -357,14 +524,14 @@ io.on("connection", (socket) => {
       .single();
 
     if (!error && data) {
-      io.to(gameCode).emit("chat-message", {
+      io.to(code).emit("chat-message", {
         id: data.id,
         playerColor: data.player_color,
         message: data.message,
         createdAt: data.created_at,
       });
     }
-  });
+  }));
 
   /**
    * Spectator chat message handler (Issue #304).
@@ -377,7 +544,7 @@ io.on("connection", (socket) => {
    * never to the player game room. This ensures active players are shielded from
    * spectator chatter.
    */
-  socket.on("spectator_message", ({ gameCode, message }) => {
+  socket.on("spectator_message", validateSocketPayload(SpectatorMessageSchema, ({ gameCode, message }) => {
     if (!gameCode || !message) return;
 
     // Extract IP from socket.io handshake (matches HTTP rate-limiter convention)
@@ -411,7 +578,7 @@ io.on("connection", (socket) => {
       message: moderation.message,
       createdAt: new Date().toISOString(),
     });
-  });
+  }));
 });
 
 app.set("io", io);

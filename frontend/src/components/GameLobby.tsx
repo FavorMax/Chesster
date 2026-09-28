@@ -248,7 +248,7 @@ function ShareMatchModal({
 		if (!shareLink) return;
 		let active = true;
 		QRCode.toDataURL(shareLink, { width: 220, margin: 1 })
-			.then((url) => {
+			.then((url: string) => {
 				if (active) setQrDataUrl(url);
 			})
 			.catch(() => {

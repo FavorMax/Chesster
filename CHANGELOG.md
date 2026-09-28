@@ -1,3 +1,61 @@
+# [1.30.0](https://github.com/Kaycee276/Chesster/compare/v1.29.0...v1.30.0) (2026-09-28)
+
+
+### Bug Fixes
+
+* **contracts:** reconcile EscrowError limits and format after upstream merge ([be8785a](https://github.com/Kaycee276/Chesster/commit/be8785a4b9d07e54dbd518df43c7dfd33c00f699))
+
+
+### Features
+
+* **contracts:** add escrow emergency drain safe-harbor with timelock delay ([f700309](https://github.com/Kaycee276/Chesster/commit/f700309c5adb0f98b98fa66cd403db440aefabd4))
+* **frontend:** add streamer mode with hidden balances ([26215f0](https://github.com/Kaycee276/Chesster/commit/26215f0621178fb723988c9637997f057751fbbb))
+* **frontend:** build live streamer mode with hidden wager balances, address masking, enlarged board coordinates, and stream overlay route ([8d7ef6c](https://github.com/Kaycee276/Chesster/commit/8d7ef6cfbc834c4fa66919386ed071f479d87543))
+* **frontend:** Implement Multi-Language Internationalization (i18n) Framework (EN, ES, FR, ZH) ([cddc5c0](https://github.com/Kaycee276/Chesster/commit/cddc5c0daa9b42c669016560587bc8f45cfe4549))
+
+# [1.29.0](https://github.com/Kaycee276/Chesster/compare/v1.28.0...v1.29.0) (2026-09-27)
+
+
+### Features
+
+* **security,testing:** sanitize chat XSS, rate-limit and sanitize API inputs, add frontend unit tests ([3557f66](https://github.com/Kaycee276/Chesster/commit/3557f66d096cec22f2bc14fffd31a532d56e0698))
+
+# [1.28.0](https://github.com/Kaycee276/Chesster/compare/v1.27.0...v1.28.0) (2026-09-27)
+
+
+### Features
+
+* **security:** resolve multiple assigned security tasks (closes [#323](https://github.com/Kaycee276/Chesster/issues/323), closes [#324](https://github.com/Kaycee276/Chesster/issues/324), closes [#325](https://github.com/Kaycee276/Chesster/issues/325), closes [#326](https://github.com/Kaycee276/Chesster/issues/326)) ([d05e842](https://github.com/Kaycee276/Chesster/commit/d05e842c69213d89f331af4530f885186fa304ce))
+
+# [1.27.0](https://github.com/Kaycee276/Chesster/compare/v1.26.0...v1.27.0) (2026-09-27)
+
+
+### Features
+
+* **backend:** Implement Real-Time Socket.io Tournament Lifecycle Events ([8d40f80](https://github.com/Kaycee276/Chesster/commit/8d40f80de44653664e82450e121732fd548adb73))
+
+# [1.26.0](https://github.com/Kaycee276/Chesster/compare/v1.25.0...v1.26.0) (2026-09-27)
+
+
+### Features
+
+* **db:** [#319](https://github.com/Kaycee276/Chesster/issues/319) player_rating_history table, [#320](https://github.com/Kaycee276/Chesster/issues/320) referral_program and claimable_commission_ledger tables ([db5d00c](https://github.com/Kaycee276/Chesster/commit/db5d00c41ccb4f0ccded0b0e372d0fc37112c344))
+
+# [1.25.0](https://github.com/Kaycee276/Chesster/compare/v1.24.0...v1.25.0) (2026-09-27)
+
+
+### Bug Fixes
+
+* correct workspace CI dependency paths ([99c6f5f](https://github.com/Kaycee276/Chesster/commit/99c6f5f627b10b4a747c098feb0526025926fb88))
+
+
+### Features
+
+* **backend:** Implement Distributed Lock for Move Submission using Redis Redlock - Closes [#239](https://github.com/Kaycee276/Chesster/issues/239) ([75d8595](https://github.com/Kaycee276/Chesster/commit/75d859539ce4da4cb959593a81f0e6ba6269d4cb))
+* **backend:** Implement Redis Adapter for Socket.io Clustering & Horizontal Scaling - Closes [#238](https://github.com/Kaycee276/Chesster/issues/238) ([99707a0](https://github.com/Kaycee276/Chesster/commit/99707a0af4b63ea07e07b6ac9d3246004d464240))
+* **backend:** Implement WebSocket Latency Telemetry and Automatic Disconnect Grace Period - Closes [#240](https://github.com/Kaycee276/Chesster/issues/240) ([9013e8f](https://github.com/Kaycee276/Chesster/commit/9013e8f7131a3ad29a4d716f80a532998d5d1fcb))
+* **contracts:** Add On-Chain Event Emitting for Player Win Streak & Trophy Milestones - Closes [#237](https://github.com/Kaycee276/Chesster/issues/237) ([fbdb3ea](https://github.com/Kaycee276/Chesster/commit/fbdb3ea99636c8465445af07ee9c7af85b202185))
+
 # [1.24.0](https://github.com/Kaycee276/Chesster/compare/v1.23.0...v1.24.0) (2026-09-27)
 
 

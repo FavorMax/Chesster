@@ -1,5 +1,12 @@
-@import url("https://fonts.googleapis.com/css2?family=Stack+Sans+Notch:wght@200..700&display=swap");
 @import "tailwindcss";
+
+@font-face {
+	font-family: "Stack Sans Notch";
+	font-style: normal;
+	font-weight: 200 700;
+	font-display: swap;
+	src: local("Stack Sans Notch"), local("Segoe UI"), local("SF Pro Display"), local("system-ui");
+}
 
 @theme {
 	/* Dark */

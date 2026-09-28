@@ -3,6 +3,10 @@
 extern crate alloc;
 
 use super::*;
+use proptest::{
+    prelude::*,
+    test_runner::{Config as ProptestConfig, TestRunner},
+};
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::token::StellarAssetClient as TokenAdminClient;
 use soroban_sdk::{
@@ -610,6 +614,75 @@ fn test_tournament_eight_player_payout_conserves_pool() {
     assert_eq!(token.balance(&treasury_vault), 4);
     assert_eq!(token.balance(&contract_id), 0);
     assert_eq!(client.get_escrowed_balance(&token.address), 0);
+}
+
+#[test]
+#[ignore = "runs 5,000 randomized settlement scenarios in contracts CI"]
+fn fuzz_balance_conservation() {
+    let scenario = (1i128..=(i128::MAX / 2), 0u32..=10_000, 0u32..=500);
+    let mut runner = TestRunner::new(ProptestConfig::with_cases(5_000));
+
+    runner
+        .run(&scenario, |(buy_in, first_winner_bps, fee_bps)| {
+            let second_winner_bps = 10_000 - first_winner_bps;
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let coordinator = Address::generate(&env);
+            let player1 = Address::generate(&env);
+            let player2 = Address::generate(&env);
+            let token_admin = Address::generate(&env);
+            let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+
+            token_admin_client.mint(&player1, &buy_in);
+            token_admin_client.mint(&player2, &buy_in);
+
+            let contract_id = env.register(ChessterEscrow, ());
+            let client = ChessterEscrowClient::new(&env, &contract_id);
+            client.init(&coordinator, &0);
+            client.set_tournament_fee_bps(&fee_bps);
+            client.add_supported_token(&token.address);
+
+            approve(&env, &token, &player1, &contract_id, buy_in);
+            approve(&env, &token, &player2, &contract_id, buy_in);
+
+            let tournament_id = String::from_str(&env, "FUZZ_CONSERVATION");
+            client.create_tournament(&tournament_id, &buy_in, &2, &2, &0, &token.address);
+            client.join_tournament(&tournament_id, &player1);
+            client.join_tournament(&tournament_id, &player2);
+
+            let total_pool = buy_in * 2;
+            let tournament = client.get_tournament(&tournament_id);
+            prop_assert_eq!(tournament.players.len(), 2);
+            prop_assert_eq!(tournament.total_pool, total_pool);
+
+            let winners = vec![&env, player1.clone(), player2.clone()];
+            let payout_bps = vec![&env, first_winner_bps, second_winner_bps];
+            client.complete_tournament(&tournament_id, &winners, &payout_bps);
+
+            let rake = (total_pool / BPS_DENOMINATOR) * fee_bps as i128
+                + ((total_pool % BPS_DENOMINATOR) * fee_bps as i128) / BPS_DENOMINATOR;
+            let net_pool = total_pool - rake;
+            let first_payout = (net_pool / BPS_DENOMINATOR) * first_winner_bps as i128
+                + ((net_pool % BPS_DENOMINATOR) * first_winner_bps as i128) / BPS_DENOMINATOR;
+            let second_payout = net_pool - first_payout;
+            let player1_balance = token.balance(&player1);
+            let player2_balance = token.balance(&player2);
+            let coordinator_balance = token.balance(&coordinator);
+
+            prop_assert_eq!(player1_balance, first_payout);
+            prop_assert_eq!(player2_balance, second_payout);
+            prop_assert_eq!(coordinator_balance, rake);
+            prop_assert_eq!(token.balance(&contract_id), 0);
+            prop_assert_eq!(client.get_escrowed_balance(&token.address), 0);
+            prop_assert_eq!(
+                player1_balance + player2_balance + coordinator_balance,
+                total_pool
+            );
+
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]
@@ -2451,6 +2524,187 @@ fn test_batch_resolve_matches_rejects_exceeding_max() {
     client.batch_resolve_tournament_matches(&resolutions);
 }
 
+// ---------------------------------------------------------------------------
+// Circuit Breaker: Emergency Token Drain Safeguard (Issue #142)
+// ---------------------------------------------------------------------------
+
+/// Sets up a contract holding a funded (Active) match so there is a real token
+/// balance to drain. Returns the client, contract id, token client, coordinator
+/// and a separate treasury vault address.
+fn setup_funded_escrow<'a>(
+    env: &'a Env,
+) -> (
+    ChessterEscrowClient<'a>,
+    Address,
+    TokenClient<'a>,
+    Address,
+    Address,
+) {
+    let coordinator = Address::generate(env);
+    let treasury_vault = Address::generate(env);
+    let player1 = Address::generate(env);
+    let player2 = Address::generate(env);
+    let token_admin = Address::generate(env);
+
+    let (token, token_admin_client) = create_token_contract(env, &token_admin);
+    token_admin_client.mint(&player1, &1000);
+    token_admin_client.mint(&player2, &1000);
+
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(env, &contract_id);
+
+    client.init(&coordinator, &500);
+    client.add_whitelisted_token(&token.address);
+
+    let game_code = String::from_str(env, "DRAIN1");
+    approve(env, &token, &player1, &contract_id, 1000);
+    approve(env, &token, &player2, &contract_id, 1000);
+    client.create_match(&game_code, &player1, &token.address, &100);
+    client.join_match(&game_code, &player2);
+
+    // Contract now holds the full 200-unit pool.
+    assert_eq!(token.balance(&contract_id), 200);
+
+    (client, contract_id, token, coordinator, treasury_vault)
+}
+
+#[test]
+fn test_emergency_drain_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, contract_id, token, _coordinator, treasury_vault) = setup_funded_escrow(&env);
+
+    client.set_treasury_vault(&treasury_vault);
+    client.pause();
+    client.authorize_migration();
+
+    assert!(client.is_migration_authorized());
+
+    let drained = client.emergency_drain(&token.address);
+
+    assert_eq!(drained, 200);
+    assert_eq!(token.balance(&contract_id), 0);
+    assert_eq!(token.balance(&treasury_vault), 200);
+    // Authorization is consumed after a successful drain.
+    assert!(!client.is_migration_authorized());
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #39)")]
+fn test_emergency_drain_blocked_when_not_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _contract_id, token, _coordinator, treasury_vault) = setup_funded_escrow(&env);
+
+    // Configure vault but leave the contract unpaused; the drain must refuse.
+    client.set_treasury_vault(&treasury_vault);
+    client.emergency_drain(&token.address);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #40)")]
+fn test_emergency_drain_blocked_without_migration_authorization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _contract_id, token, _coordinator, treasury_vault) = setup_funded_escrow(&env);
+
+    client.set_treasury_vault(&treasury_vault);
+    client.pause();
+    // Deliberately skip authorize_migration().
+    client.emergency_drain(&token.address);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #41)")]
+fn test_emergency_drain_blocked_without_treasury_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _contract_id, token, _coordinator, _treasury_vault) = setup_funded_escrow(&env);
+
+    client.pause();
+    client.authorize_migration();
+    // No treasury vault configured — there is no safe destination.
+    client.emergency_drain(&token.address);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #39)")]
+fn test_authorize_migration_requires_pause_first() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500);
+
+    // Cannot arm the migration window while the circuit breaker is disengaged.
+    client.authorize_migration();
+}
+
+#[test]
+fn test_emergency_drain_requires_coordinator_auth() {
+    // Exploit simulation: a non-coordinator attempts to sweep the treasury.
+    let env = Env::default();
+
+    let coordinator = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let treasury_vault = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+
+    // Perform privileged setup as the real coordinator.
+    env.mock_all_auths();
+    token_admin_client.mint(&contract_id, &500);
+    client.init(&coordinator, &500);
+    client.set_treasury_vault(&treasury_vault);
+    client.pause();
+    client.authorize_migration();
+
+    // Now require genuine auth and present only the attacker's authorization.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attacker,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "emergency_drain",
+            args: (&token.address,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_emergency_drain(&token.address);
+    assert!(result.is_err());
+    // Funds remain untouched in the contract.
+    assert_eq!(token.balance(&contract_id), 500);
+    assert_eq!(token.balance(&treasury_vault), 0);
+}
+
+#[test]
+fn test_revoke_migration_relocks_drain() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _contract_id, token, _coordinator, treasury_vault) = setup_funded_escrow(&env);
+
+    client.set_treasury_vault(&treasury_vault);
+    client.pause();
+    client.authorize_migration();
+    assert!(client.is_migration_authorized());
+
+    client.revoke_migration();
+    assert!(!client.is_migration_authorized());
+
+    let result = client.try_emergency_drain(&token.address);
+    assert!(result.is_err());
+}
+
 #[test]
 fn test_resolve_match_with_signature() {
     let env = Env::default();
@@ -2643,6 +2897,59 @@ fn test_resolve_match_with_used_nonce() {
 
     // Should panic on second invocation
     client.resolve_match_with_signature(&payload, &BytesN::from_array(&env, &sig_bytes));
+}
+
+#[test]
+fn test_milestone_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    use soroban_sdk::TryIntoVal;
+
+    let coordinator = Address::generate(&env);
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    token_admin_client.mint(&player1, &100000);
+    token_admin_client.mint(&player2, &100000);
+
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+
+    client.init(&coordinator, &500);
+    client.add_whitelisted_token(&token.address);
+
+    approve(&env, &token, &player1, &contract_id, 100000);
+    approve(&env, &token, &player2, &contract_id, 100000);
+
+    let mut streak5_found = false;
+    for i in 1..=6 {
+        let game_code = String::from_str(&env, &alloc::format!("STREAK_GAME_{}", i));
+        client.create_match(&game_code, &player1, &token.address, &100);
+        client.join_match(&game_code, &player2);
+        client.resolve_match(&game_code, &Some(player1.clone()));
+
+        let events = env.events().all();
+        for (_contract_id, topic, payload) in events.into_iter() {
+            if topic.len() == 2 {
+                let t0: Result<Symbol, _> = topic.get(0).unwrap().try_into_val(&env);
+                if let Ok(sym) = t0 {
+                    if sym == symbol_short!("milestone") {
+                        let p: Address = topic.get(1).unwrap().try_into_val(&env).unwrap();
+                        assert_eq!(p, player1);
+                        let (streak, m_type): (u32, Symbol) = payload.try_into_val(&env).unwrap();
+                        assert_eq!(streak, 5);
+                        assert_eq!(m_type, symbol_short!("streak5"));
+                        streak5_found = true;
+                    }
+                }
+            }
+        }
+    }
+    assert!(streak5_found, "milestone event for streak 5 not found");
 }
 
 #[test]
@@ -2856,6 +3163,7 @@ fn test_custom_match_duration_bullet_vs_classical() {
     let token_admin = Address::generate(&env);
 
     let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+
     token_admin_client.mint(&player1, &2000);
     token_admin_client.mint(&player2, &2000);
 
@@ -3087,6 +3395,78 @@ fn test_sponsored_deposit_invocation() {
 // ---------------------------------------------------------------------------
 // Tests for Issue #290: Collaborative Multi-Party Match Cancellation Protocol
 // ---------------------------------------------------------------------------
+
+#[test]
+fn test_resolve_match_pays_winner_minus_fee_and_finalizes_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&player1, &1000);
+    token_admin_client.mint(&player2, &1000);
+
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500); // 5% fee
+    client.add_whitelisted_token(&token.address);
+
+    let game_code = String::from_str(&env, "CEI1");
+    approve(&env, &token, &player1, &contract_id, 1000);
+    approve(&env, &token, &player2, &contract_id, 1000);
+    client.create_match(&game_code, &player1, &token.address, &100);
+    client.join_match(&game_code, &player2);
+
+    client.resolve_match(&game_code, &Some(player1.clone()));
+
+    // 200 pot, 5% fee = 10; winner takes 190.
+    assert_eq!(token.balance(&player1), 1090);
+    assert_eq!(token.balance(&player2), 900);
+    assert_eq!(token.balance(&coordinator), 10);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    // Effects were applied before the transfers: the match is fully resolved.
+    let match_data = client.get_match(&game_code);
+    assert_eq!(match_data.status, MatchStatus::Resolved);
+    assert_eq!(match_data.winner, Some(player1));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_resolve_match_cannot_be_replayed_after_settlement() {
+    // Exploit: a re-entrant or replayed resolve must not double-spend the pot.
+    // Because state is finalized before any transfer, the second resolve sees a
+    // non-Active match and aborts with MatchNotActive (#7).
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    token_admin_client.mint(&player1, &1000);
+    token_admin_client.mint(&player2, &1000);
+
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+    client.init(&coordinator, &500);
+    client.add_whitelisted_token(&token.address);
+
+    let game_code = String::from_str(&env, "CEI2");
+    approve(&env, &token, &player1, &contract_id, 1000);
+    approve(&env, &token, &player2, &contract_id, 1000);
+    client.create_match(&game_code, &player1, &token.address, &100);
+    client.join_match(&game_code, &player2);
+
+    client.resolve_match(&game_code, &Some(player1.clone()));
+    client.resolve_match(&game_code, &Some(player1));
+}
 
 #[test]
 fn test_collaborative_mutual_cancellation_protocol() {
@@ -3323,4 +3703,99 @@ fn test_fee_discount_tiers() {
     client.resolve_match(&game_code_2, &Some(tier2_winner.clone()));
     assert_eq!(token.balance(&tier2_winner), 10_000 - 100 + 195); // net payout 195
     assert_eq!(token.balance(&coordinator), 7 + 5); // additional fee payout 5
+}
+
+#[test]
+fn test_timelock_safety() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+
+    client.init(&coordinator, &500);
+    client.add_whitelisted_token(&token.address);
+
+    // Mint funds to contract to simulate trapped escrow funds
+    token_admin_client.mint(&contract_id, &50_000);
+    assert_eq!(token.balance(&contract_id), 50_000);
+
+    // Initial state: no drain scheduled
+    assert_eq!(client.get_emergency_drain_schedule(), None);
+
+    // 1. Coordinator schedules emergency drain
+    let current_time = env.ledger().timestamp();
+    client.schedule_emergency_drain(&recipient);
+
+    let (sched_recipient, unlock_time) = client.get_emergency_drain_schedule().unwrap();
+    assert_eq!(sched_recipient, recipient);
+    assert_eq!(unlock_time, current_time + EMERGENCY_DRAIN_TIMELOCK_SECS);
+
+    // 2. Cancellation test: coordinator cancels drain
+    client.cancel_emergency_drain();
+    assert_eq!(client.get_emergency_drain_schedule(), None);
+
+    // 3. Reschedule drain
+    client.schedule_emergency_drain(&recipient);
+    let (_, new_unlock_time) = client.get_emergency_drain_schedule().unwrap();
+
+    // 4. Advance time past the 7-day timelock delay (604,800 seconds)
+    env.ledger().set_timestamp(new_unlock_time + 10);
+
+    // 5. Execution succeeds after timelock elapses
+    client.execute_emergency_drain(&token.address);
+
+    assert_eq!(token.balance(&recipient), 50_000);
+    assert_eq!(token.balance(&contract_id), 0);
+    assert_eq!(client.get_emergency_drain_schedule(), None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #25)")]
+fn test_timelock_safety_blocks_premature_drain() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, token_admin_client) = create_token_contract(&env, &token_admin);
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+
+    client.init(&coordinator, &500);
+    client.add_whitelisted_token(&token.address);
+    token_admin_client.mint(&contract_id, &50_000);
+
+    client.schedule_emergency_drain(&recipient);
+
+    // Attempting execution immediately or before 7 days (e.g. 6 days) must fail with DisputeTimeLockActive (#25)
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + (6 * 24 * 60 * 60));
+    client.execute_emergency_drain(&token.address);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #24)")]
+fn test_timelock_safety_blocks_unscheduled_drain() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let coordinator = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let (token, _) = create_token_contract(&env, &token_admin);
+    let contract_id = env.register(ChessterEscrow, ());
+    let client = ChessterEscrowClient::new(&env, &contract_id);
+
+    client.init(&coordinator, &500);
+
+    // Executing drain without active schedule fails with DisputeNotFound (#24)
+    client.execute_emergency_drain(&token.address);
 }
