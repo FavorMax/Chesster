@@ -33,6 +33,7 @@ jobs:
               - '.github/workflows/ci.yml'
             frontend:
               - 'frontend/**'
+              - '.lighthouserc.json'
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/ci.yml'
@@ -109,6 +110,17 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Run Lighthouse CI
+        run: npm run lhci
+
+      - name: Upload Lighthouse CI Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: frontend/.lighthouseci
+          if-no-files-found: warn
+
       - name: Check Frontend Bundle Size
         run: npm run size-check
 
@@ -173,6 +185,10 @@ jobs:
 
       - name: Run Contract Tests
         run: cargo test
+
+      - name: Run Soroban Contract Property Fuzz Tests
+        run: cargo test --release -p escrow fuzz_balance_conservation -- --ignored
+        timeout-minutes: 5
 
       - name: Build & Optimize Contract
         run: make optimize

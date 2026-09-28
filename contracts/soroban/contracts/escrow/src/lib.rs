@@ -112,6 +112,14 @@ pub enum EscrowError {
     ReentrancyGuard = 37,
     /// Contract balance invariant check failed.
     InvariantViolated = 38,
+    /// Emergency drain requires the contract to be paused (circuit breaker engaged).
+    NotPaused = 39,
+    /// Emergency drain requires an authorized migration to be in progress.
+    MigrationNotAuthorized = 40,
+    /// Emergency drain requires a treasury vault destination to be configured.
+    TreasuryVaultNotSet = 41,
+    /// There is no positive token balance available to drain.
+    NothingToDrain = 42,
     /// Checked integer arithmetic overflowed or underflowed.
     Overflow = 39,
     /// Tournament entry fee has already been refunded to player.
@@ -544,6 +552,39 @@ pub struct ContractUnpausedEvent {
     pub coordinator: Address,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Published when the coordinator authorizes an emergency migration window,
+/// unlocking the emergency drain safeguard.
+pub struct MigrationAuthorizedEvent {
+    /// Coordinator address that authorized the migration.
+    pub coordinator: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Published when the coordinator revokes a previously authorized migration
+/// window, re-locking the emergency drain safeguard.
+pub struct MigrationRevokedEvent {
+    /// Coordinator address that revoked the migration.
+    pub coordinator: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// Published when the coordinator drains the full token balance to the
+/// configured treasury vault during an authorized emergency migration.
+pub struct EmergencyDrainEvent {
+    /// Coordinator address that executed the drain.
+    pub coordinator: Address,
+    /// Token whose balance was drained.
+    pub token: Address,
+    /// Treasury vault destination that received the funds.
+    pub treasury_vault: Address,
+    /// Amount transferred to the treasury vault.
+    pub amount: i128,
+}
+
 /// Reentrancy guard that locks guarded escrow functions for the duration of a
 /// transaction, preventing cross-contract re-entry. The lock is set
 /// on entry via `acquire_reentrancy` or `ReentrancyGuard::new` and cleared on exit.
@@ -621,6 +662,15 @@ fn checked_mul_div(env: &Env, a: i128, b: i128, denom: i128) -> i128 {
     a.checked_mul(b)
         .map(|product| product / denom)
         .unwrap_or_else(|| panic_with_error!(env, EscrowError::Overflow))
+}
+
+fn mul_div_bps(amount: i128, bps: u32) -> i128 {
+    let bps = i128::from(bps);
+    let whole = (amount / BPS_DENOMINATOR).checked_mul(bps).unwrap();
+    let fraction = (amount % BPS_DENOMINATOR).checked_mul(bps).unwrap() / BPS_DENOMINATOR;
+    whole.checked_add(fraction).unwrap()
+}
+
 /// Payload for resolving a match via Ed25519 signature.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -781,6 +831,151 @@ impl ChessterEscrow {
             .unwrap_or(false)
     }
 
+    // -----------------------------------------------------------------------
+    // Circuit Breaker: Emergency Token Drain Safeguard (Issue #142)
+    // -----------------------------------------------------------------------
+    //
+    // The emergency drain lets the coordinator move the contract's entire token
+    // balance to a pre-configured treasury vault while the platform is being
+    // migrated to a new contract. Because an unrestricted balance sweep is a
+    // prime exploit target, it is protected by defense-in-depth: the destination
+    // is fixed to the coordinator-configured treasury vault (never a
+    // caller-supplied address), and the sweep is only reachable when three
+    // independent gates all hold — coordinator authorization, the circuit
+    // breaker (pause) engaged, and an explicitly authorized migration window.
+
+    fn migration_key(env: &Env) -> Symbol {
+        Symbol::new(env, "mig_ok")
+    }
+
+    /// Authorizes an emergency migration window, unlocking `emergency_drain`
+    /// (coordinator only). The contract must already be paused so the drain can
+    /// never be armed on a live, unpaused contract.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    pub fn authorize_migration(env: Env) {
+        let coordinator = Self::get_coordinator(env.clone());
+        coordinator.require_auth();
+        if !Self::is_paused(env.clone()) {
+            panic_with_error!(&env, EscrowError::NotPaused);
+        }
+        env.storage()
+            .instance()
+            .set(&Self::migration_key(&env), &true);
+        Self::bump_instance_ttl(&env);
+        env.events().publish(
+            (symbol_short!("mig_auth"),),
+            MigrationAuthorizedEvent { coordinator },
+        );
+    }
+
+    /// Revokes a previously authorized migration window, re-locking
+    /// `emergency_drain` (coordinator only).
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    pub fn revoke_migration(env: Env) {
+        let coordinator = Self::get_coordinator(env.clone());
+        coordinator.require_auth();
+        env.storage()
+            .instance()
+            .set(&Self::migration_key(&env), &false);
+        Self::bump_instance_ttl(&env);
+        env.events().publish(
+            (symbol_short!("mig_revk"),),
+            MigrationRevokedEvent { coordinator },
+        );
+    }
+
+    /// Returns whether an emergency migration is currently authorized.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    ///
+    /// # Returns
+    /// * `bool` - `true` if a migration window is authorized, `false` otherwise.
+    pub fn is_migration_authorized(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&Self::migration_key(&env))
+            .unwrap_or(false)
+    }
+
+    /// Emergency circuit-breaker drain: transfers the contract's full balance of
+    /// `token` to the configured treasury vault (coordinator only) (Issue #142).
+    ///
+    /// This is only reachable when all safeguards hold simultaneously:
+    /// 1. the caller is the coordinator (`require_auth`);
+    /// 2. the contract is paused (circuit breaker engaged) — otherwise `NotPaused`;
+    /// 3. an emergency migration is authorized — otherwise `MigrationNotAuthorized`;
+    /// 4. a treasury vault is configured — otherwise `TreasuryVaultNotSet`.
+    ///
+    /// The destination is always the pre-configured treasury vault, never a
+    /// caller-supplied address, which is what blocks the "drain to an arbitrary
+    /// attacker address" exploit. The migration authorization is consumed
+    /// (reset to `false`) after a successful drain so the window cannot be
+    /// silently reused.
+    ///
+    /// # Arguments
+    /// * `env` - Environment reference.
+    /// * `token` - Token contract address whose balance is swept.
+    ///
+    /// # Returns
+    /// * `i128` - Amount transferred to the treasury vault.
+    pub fn emergency_drain(env: Env, token: Address) -> i128 {
+        let coordinator = Self::get_coordinator(env.clone());
+        coordinator.require_auth();
+        let _guard = ReentrancyGuard::new(&env);
+
+        if !Self::is_paused(env.clone()) {
+            panic_with_error!(&env, EscrowError::NotPaused);
+        }
+        if !Self::is_migration_authorized(env.clone()) {
+            panic_with_error!(&env, EscrowError::MigrationNotAuthorized);
+        }
+
+        let treasury_vault = match Self::get_treasury_vault(env.clone()) {
+            Some(vault) => vault,
+            None => panic_with_error!(&env, EscrowError::TreasuryVaultNotSet),
+        };
+
+        let token_client = token::Client::new(&env, &token);
+        let amount = token_client.balance(&env.current_contract_address());
+        if amount <= 0 {
+            panic_with_error!(&env, EscrowError::NothingToDrain);
+        }
+
+        token_client.transfer(&env.current_contract_address(), &treasury_vault, &amount);
+
+        // The full balance (including any locked escrow) has moved to the secure
+        // treasury vault, so the on-chain locked accounting no longer reflects
+        // funds held by this contract. Clear it for the drained token.
+        env.storage()
+            .instance()
+            .set(&Self::locked_key(&env, &token), &0i128);
+
+        // Consume the migration authorization so a single approval cannot be
+        // replayed for a second drain.
+        env.storage()
+            .instance()
+            .set(&Self::migration_key(&env), &false);
+        Self::bump_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("emrg_drn"), token.clone()),
+            EmergencyDrainEvent {
+                coordinator,
+                token,
+                treasury_vault,
+                amount,
+            },
+        );
+
+        amount
+    }
+
+    /// Sets governance token address for calculating fee discounts (Issue #36).
     /// Sets governance token address for calculating fee discounts (Issue #36 & Issue #283).
     ///
     /// # Arguments
@@ -1105,7 +1300,7 @@ impl ChessterEscrow {
     /// # Returns
     /// * `(i128, i128)` - (net_prize, rake).
     pub fn calculate_tournament_rake(total_pool: i128, fee_bps: u32) -> (i128, i128) {
-        let rake = (total_pool * fee_bps as i128) / BPS_DENOMINATOR;
+        let rake = mul_div_bps(total_pool, fee_bps);
         let net_prize = total_pool - rake;
         (net_prize, rake)
     }
@@ -2667,9 +2862,6 @@ impl ChessterEscrow {
         } else {
             0
         };
-            let (winner_pay, admin_fee_calc) =
-                Self::calculate_discounted_fee(env.clone(), m.total_staked, w.clone());
-            admin_fee = admin_fee_calc;
 
         m.status = MatchStatus::Resolved;
         m.winner = winner.clone();
@@ -3786,11 +3978,6 @@ impl ChessterEscrow {
 
         tournament.players.push_back(player);
         tournament.total_pool = checked_add(&env, tournament.total_pool, tournament.buy_in_amount);
-        tournament.players.push_back(player.clone());
-        tournament.total_pool = tournament
-            .total_pool
-            .checked_add(tournament.buy_in_amount)
-            .unwrap();
 
         Self::add_locked(&env, &tournament.token, tournament.buy_in_amount);
 
@@ -3872,28 +4059,16 @@ impl ChessterEscrow {
         }
         let (net_pool, rake) = Self::calculate_tournament_rake(tournament.total_pool, fee_bps);
 
+        tournament.status = TournamentStatus::Completed;
+        tournament.final_rankings = winners.clone();
+        env.storage().persistent().set(&tournament_id, &tournament);
+        Self::bump_entry_ttl(&env, &tournament_id);
+
         let token_client = token::Client::new(&env, &tournament.token);
         if rake > 0 {
             token_client.transfer(&env.current_contract_address(), &fee_recipient, &rake);
         }
 
-        // --- EFFECTS: finalize tournament state before paying out prizes, per
-        // checks-effects-interactions. ---
-        tournament.status = TournamentStatus::Completed;
-        tournament.final_rankings = final_rankings.clone();
-        env.storage().persistent().set(&tournament_id, &tournament);
-        Self::bump_entry_ttl(&env, &tournament_id);
-
-        // --- INTERACTIONS: prize transfers after the tournament is marked
-        // completed, so a re-entrant call sees the final state. ---
-        for (i, winner) in final_rankings.iter().enumerate() {
-            if (i as u32) < tournament.prize_distribution.len() {
-                let prize = tournament.prize_distribution.get(i as u32).unwrap_or(0);
-                if prize > 0 {
-                    token_client.transfer(&env.current_contract_address(), &winner, &prize);
-                }
-            }
-        }
         let mut total_distributed: i128 = 0;
         let num_winners = winners.len();
         for i in 0..num_winners {
@@ -3902,9 +4077,7 @@ impl ChessterEscrow {
             let payout = if i == num_winners - 1 {
                 net_pool.checked_sub(total_distributed).unwrap()
             } else {
-                (net_pool.checked_mul(bps as i128).unwrap())
-                    .checked_div(10_000)
-                    .unwrap()
+                mul_div_bps(net_pool, bps)
             };
             total_distributed = total_distributed.checked_add(payout).unwrap();
 
@@ -3927,12 +4100,6 @@ impl ChessterEscrow {
 
         Self::sub_locked(&env, &tournament.token, tournament.total_pool);
         Self::assert_balance_invariant(&env, &tournament.token);
-
-        tournament.status = TournamentStatus::Completed;
-        tournament.final_rankings = winners.clone();
-
-        env.storage().persistent().set(&tournament_id, &tournament);
-        Self::bump_entry_ttl(&env, &tournament_id);
 
         env.events().publish(
             (symbol_short!("tourn_cmp"), tournament_id),

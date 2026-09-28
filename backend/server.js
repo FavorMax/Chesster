@@ -21,6 +21,7 @@ const eventConsumer = require("./workers/eventConsumer");
 const supabase = require("./config/supabase");
 const logger = require("./utils/logger");
 const { errorHandler, installGlobalHandlers } = require("./middleware/errorHandler");
+const { enforceHttps, enforceSecureSocket } = require("./middleware/enforceHttps");
 const { moderateMessage } = require("./services/chatService");
 const gameModel = require("./models/gameModel");
 const {
@@ -84,6 +85,16 @@ io.engine.use((req, res, next) => socketHandshakeLimiter(req, res, next));
 
 const PORT = process.env.PORT || 3001;
 
+// Trust the TLS-terminating proxy (Render/Nginx/LB) so req.protocol and the
+// X-Forwarded-Proto header can be used to enforce HTTPS in production.
+app.set("trust proxy", 1);
+
+// Redirect HTTP to HTTPS and emit HSTS in production (Issue #143). Registered
+// first so no downstream handler processes an insecure request.
+app.use(enforceHttps);
+
+// Reject insecure (non-wss) WebSocket handshakes in production (Issue #143).
+io.use(enforceSecureSocket());
 // Strict Content Security Policy via Helmet (Issue #325)
 const isProduction = process.env.NODE_ENV === "production";
 app.use(
