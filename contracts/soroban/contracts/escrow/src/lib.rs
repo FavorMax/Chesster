@@ -14,6 +14,10 @@ pub const DISPUTE_TIMELOCK_SECS: u64 = 172_800;
 pub const MAX_BATCH_RESOLUTIONS: u32 = 10;
 /// Duration (in seconds) after which settled or refunded matches become eligible for garbage collection (30 days).
 pub const STALE_MATCH_THRESHOLD_SECS: u64 = 2_592_000;
+/// Maximum number of game codes allowed in a single stale match garbage collection batch (Issue #380).
+pub const MAX_BATCH_GC_MATCHES: u32 = 25;
+/// Alias for the maximum stale match garbage collection batch size (Issue #380).
+pub const MAX_GC_BATCH_SIZE: u32 = MAX_BATCH_GC_MATCHES;
 /// Default duration (in seconds) after which a pending or active match expires (1 hour).
 pub const MATCH_EXPIRATION_SECS: u64 = 3_600;
 /// Minimum allowable match duration in seconds (2 minutes) (Issue #287).
@@ -87,7 +91,7 @@ pub enum EscrowError {
     DisputeNotFound = 24,
     /// Dispute timelock (48 hours) is currently active.
     DisputeTimeLockActive = 25,
-    /// Batch resolution size is empty or exceeds limit.
+    /// Batch size is empty or exceeds allowable limit (Issue #23, #380).
     InvalidBatchSize = 26,
     /// Match is not stale (must be resolved/refunded and >30 days old).
     MatchNotStale = 27,
@@ -3864,17 +3868,24 @@ impl ChessterEscrow {
         Self::batch_resolve_matches(env, resolutions);
     }
 
-    /// Cleans up settled or refunded matches older than 30 days (`STALE_MATCH_THRESHOLD_SECS`) from storage (Issue #41).
+    /// Cleans up settled or refunded matches older than 30 days (`STALE_MATCH_THRESHOLD_SECS`) from storage (Issue #41, #380).
+    ///
+    /// Callers should split larger cleanup sets into bounded invocations of up to `MAX_BATCH_GC_MATCHES`.
     ///
     /// # Arguments
     /// * `env` - Environment reference.
-    /// * `game_codes` - Vector of game codes to evaluate for garbage collection.
+    /// * `game_codes` - Vector of game codes to evaluate for garbage collection (maximum `MAX_BATCH_GC_MATCHES`).
     ///
     /// # Returns
     /// * `u32` - Number of stale match storage entries removed.
     pub fn gc_stale_matches(env: Env, game_codes: Vec<String>) -> u32 {
         let coordinator = Self::get_coordinator(env.clone());
         coordinator.require_auth();
+
+        let len = game_codes.len();
+        if len > MAX_BATCH_GC_MATCHES {
+            panic_with_error!(&env, EscrowError::InvalidBatchSize);
+        }
 
         let mut cleaned: u32 = 0;
         let now = env.ledger().timestamp();
