@@ -94,6 +94,12 @@ class SocketService {
 		this.socket?.off("chat-message");
 	}
 
+	onTournamentMatchCompleted(callback: (data: any) => void) {
+		this.socket?.on("tournament:match_completed", callback);
+	}
+
+	offTournamentMatchCompleted() {
+		this.socket?.off("tournament:match_completed");
 	requestRematch(gameCode: string, playerColor: string) {
 		this.socket?.emit("request-rematch", { gameCode, playerColor });
 	}
