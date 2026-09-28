@@ -8,6 +8,7 @@
                     "dev":  "nodemon server.js",
                     "test":  "jest",
                     "test:coverage":  "jest --coverage",
+                    "test:load": "node tests/load/websocketStress.js",
                     "migrate":  "node database/migrate.js up",
                     "migrate:down":  "node database/migrate.js down",
                     "migrate:status":  "node database/migrate.js status",
