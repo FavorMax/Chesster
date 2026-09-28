@@ -1,3 +1,10 @@
+# [1.31.0](https://github.com/Kaycee276/Chesster/compare/v1.30.0...v1.31.0) (2026-09-28)
+
+
+### Features
+
+* **frontend:** add keyboard move input, leaderboard filters, disconnect banner, and PGN drag-and-drop ([197b889](https://github.com/Kaycee276/Chesster/commit/197b8891bbf3e7293d31526c8b0e60786278337b)), closes [#315](https://github.com/Kaycee276/Chesster/issues/315) [#316](https://github.com/Kaycee276/Chesster/issues/316) [#317](https://github.com/Kaycee276/Chesster/issues/317) [#318](https://github.com/Kaycee276/Chesster/issues/318)
+
 # [1.30.0](https://github.com/Kaycee276/Chesster/compare/v1.29.0...v1.30.0) (2026-09-28)
 
 
