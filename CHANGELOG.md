@@ -1,3 +1,10 @@
+# [1.33.0](https://github.com/Kaycee276/Chesster/compare/v1.32.0...v1.33.0) (2026-09-28)
+
+
+### Features
+
+* **contracts,ci:** bound stale match GC batches and pin GitHub Actions to commit SHAs (closes [#379](https://github.com/Kaycee276/Chesster/issues/379), closes [#380](https://github.com/Kaycee276/Chesster/issues/380)) ([2293056](https://github.com/Kaycee276/Chesster/commit/229305637594b42dd4ef394ef5abca1b0bf4aead))
+
 # [1.32.0](https://github.com/Kaycee276/Chesster/compare/v1.31.0...v1.32.0) (2026-09-28)
 
 
