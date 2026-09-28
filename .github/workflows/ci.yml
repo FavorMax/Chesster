@@ -33,6 +33,7 @@ jobs:
               - '.github/workflows/ci.yml'
             frontend:
               - 'frontend/**'
+              - '.lighthouserc.json'
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/ci.yml'
@@ -56,9 +57,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: '.nvmrc'
+          node-version-file: 'backend/.nvmrc'
           cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache-dependency-path: 'backend/package-lock.json'
 
       - name: Install Dependencies
         run: npm ci
@@ -90,9 +91,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version-file: '.nvmrc'
+          node-version-file: 'frontend/.nvmrc'
           cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache-dependency-path: 'frontend/package-lock.json'
 
       - name: Install Dependencies
         run: npm ci
@@ -108,6 +109,30 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Run Lighthouse CI
+        run: npm run lhci
+
+      - name: Upload Lighthouse CI Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-reports
+          path: frontend/.lighthouseci
+          if-no-files-found: warn
+
+      - name: Check Frontend Bundle Size
+        run: npm run size-check
+
+      - name: Generate Frontend Bundle Stats
+        run: npm run build:analyze
+
+      - name: Upload Frontend Bundle Stats
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-bundle-stats
+          path: frontend/dist/stats.html
+          if-no-files-found: error
 
       - name: Upload Frontend Coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -160,6 +185,10 @@ jobs:
 
       - name: Run Contract Tests
         run: cargo test
+
+      - name: Run Soroban Contract Property Fuzz Tests
+        run: cargo test --release -p escrow fuzz_balance_conservation -- --ignored
+        timeout-minutes: 5
 
       - name: Build & Optimize Contract
         run: make optimize
