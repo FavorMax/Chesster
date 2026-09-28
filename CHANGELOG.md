@@ -1,3 +1,18 @@
+# [1.30.0](https://github.com/Kaycee276/Chesster/compare/v1.29.0...v1.30.0) (2026-09-28)
+
+
+### Bug Fixes
+
+* **contracts:** reconcile EscrowError limits and format after upstream merge ([be8785a](https://github.com/Kaycee276/Chesster/commit/be8785a4b9d07e54dbd518df43c7dfd33c00f699))
+
+
+### Features
+
+* **contracts:** add escrow emergency drain safe-harbor with timelock delay ([f700309](https://github.com/Kaycee276/Chesster/commit/f700309c5adb0f98b98fa66cd403db440aefabd4))
+* **frontend:** add streamer mode with hidden balances ([26215f0](https://github.com/Kaycee276/Chesster/commit/26215f0621178fb723988c9637997f057751fbbb))
+* **frontend:** build live streamer mode with hidden wager balances, address masking, enlarged board coordinates, and stream overlay route ([8d7ef6c](https://github.com/Kaycee276/Chesster/commit/8d7ef6cfbc834c4fa66919386ed071f479d87543))
+* **frontend:** Implement Multi-Language Internationalization (i18n) Framework (EN, ES, FR, ZH) ([cddc5c0](https://github.com/Kaycee276/Chesster/commit/cddc5c0daa9b42c669016560587bc8f45cfe4549))
+
 # [1.29.0](https://github.com/Kaycee276/Chesster/compare/v1.28.0...v1.29.0) (2026-09-27)
 
 
