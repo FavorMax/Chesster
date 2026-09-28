@@ -1,3 +1,10 @@
+# [1.32.0](https://github.com/Kaycee276/Chesster/compare/v1.31.0...v1.32.0) (2026-09-28)
+
+
+### Features
+
+* **frontend:** Create Interactive Tree Tournament Bracket Component with Live Match Links ([cf9308b](https://github.com/Kaycee276/Chesster/commit/cf9308bb893cb5cfaf28f5eb67fa33f2777d7f9a)), closes [#229](https://github.com/Kaycee276/Chesster/issues/229)
+
 # [1.31.0](https://github.com/Kaycee276/Chesster/compare/v1.30.0...v1.31.0) (2026-09-28)
 
 
