@@ -1,4 +1,9 @@
-const geoip = require("geoip-lite");
+let geoip;
+try {
+  geoip = require("geoip-lite");
+} catch (e) {
+  geoip = { lookup: () => null };
+}
 const proxyaddr = require("proxy-addr");
 const gameModel = require("../models/gameModel");
 const {

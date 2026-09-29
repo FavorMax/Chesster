@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parsePgn, replayPgn, loadPgn, PgnParseError } from "../src/utils/pgnParser";
+import { parsePgn, replayPgn, loadPgn, splitPgnGames, PgnParseError } from "../src/utils/pgnParser";
 import { squareToAlgebraic } from "../src/utils/chessUtils";
 
 const RUY_LOPEZ = `[Event "Test"]
@@ -73,5 +73,59 @@ describe("pgnParser", () => {
 
 	it("throws when there are no moves at all", () => {
 		expect(() => loadPgn('[Event "Empty"]\n\n*')).toThrow(PgnParseError);
+	});
+});
+
+describe("splitPgnGames (#318)", () => {
+	it("returns a single game for a one-game file", () => {
+		const games = splitPgnGames(RUY_LOPEZ);
+		expect(games).toHaveLength(1);
+		expect(games[0].headers.White).toBe("Alice");
+		expect(games[0].headers.Black).toBe("Bob");
+		expect(games[0].pgn).toContain("7. Bb3 d6");
+	});
+
+	it("returns a single game for headerless movetext", () => {
+		const games = splitPgnGames(SCHOLARS_MATE);
+		expect(games).toHaveLength(1);
+		expect(games[0].headers).toEqual({});
+		expect(games[0].pgn).toContain("Qxf7#");
+	});
+
+	it("splits a multi-game collection into separate games", () => {
+		const collection = [
+			'[Event "World Ch. G1"]',
+			'[White "Carlsen"]',
+			'[Black "Caruana"]',
+			"",
+			"1. e4 e5 2. Nf3 1-0",
+			"",
+			'[Event "World Ch. G2"]',
+			'[White "Caruana"]',
+			'[Black "Carlsen"]',
+			"",
+			"1. d4 d5 0-1",
+		].join("\n");
+
+		const games = splitPgnGames(collection);
+		expect(games).toHaveLength(2);
+		expect(games[0].headers.Event).toBe("World Ch. G1");
+		expect(games[0].pgn).not.toContain("World Ch. G2");
+		expect(games[1].headers.Event).toBe("World Ch. G2");
+		expect(games[1].pgn).toContain("0-1");
+	});
+
+	it("returns an empty array for blank input", () => {
+		expect(splitPgnGames("")).toEqual([]);
+		expect(splitPgnGames("   \n\n  ")).toEqual([]);
+	});
+
+	it("lets a corrupt game inside a collection surface its parse error", () => {
+		// The analysis page replays each selected game; a corrupt one must
+		// throw PgnParseError when selected rather than silently failing.
+		const games = splitPgnGames(RUY_LOPEZ);
+		expect(() => loadPgn(games[0].pgn.replace("2. Nf3", "2. Ke2"))).toThrow(
+			PgnParseError,
+		);
 	});
 });

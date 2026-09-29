@@ -952,6 +952,14 @@
                       },
                       {
                         "key": {
+                          "symbol": "reentr"
+                        },
+                        "val": {
+                          "bool": false
+                        }
+                      },
+                      {
+                        "key": {
                           "symbol": "signers"
                         },
                         "val": {

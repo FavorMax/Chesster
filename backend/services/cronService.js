@@ -1,16 +1,46 @@
 const supabase = require("../config/supabase");
 const notificationService = require("./notificationService");
+const archivalService = require("./archivalService");
+const { refreshTorExitList } = require("../middlewares/proxyDetection");
 
 class CronService {
-	constructor({ db = supabase, notifications = notificationService } = {}) {
+	constructor({ db = supabase, notifications = notificationService, archival = archivalService } = {}) {
 		this.db = db;
 		this.notifications = notifications;
+		this.archival = archival;
 		this.isRunning = false;
 		this.cronIntervalMs = 60 * 1000;
 		this.cleanupIntervalMs = 60 * 60 * 1000;
 		this.cleanupThresholdHours = 24;
 		this.lastCleanupAt = 0;
+		this.lastTorRefreshAt = 0;
+		this.torRefreshIntervalMs = 24 * 60 * 60 * 1000; // 24 hours
+		this.archivalIntervalMs = 7 * 24 * 60 * 60 * 1000;
+		this.archivalAgeDays = 90;
 		this.cronHandle = null;
+		this.archivalHandle = null;
+	}
+
+	async refreshTorNodes() {
+		try {
+			return await refreshTorExitList();
+		} catch (error) {
+			console.error("[CronService] Tor exit nodes refresh failed:", error.message);
+			return { success: false, error: error.message };
+		}
+	}
+
+	async archiveCompletedGames() {
+		const cutoffDate = new Date(Date.now() - this.archivalAgeDays * 24 * 60 * 60 * 1000);
+		try {
+			if (this.archival && typeof this.archival.archiveOldGames === "function") {
+				return await this.archival.archiveOldGames(cutoffDate);
+			}
+			return { success: true, archived: 0 };
+		} catch (error) {
+			console.error("[CronService] Game archival failed:", error.message);
+			return { success: false, error: error.message };
+		}
 	}
 
 	async cleanupAbandonedLobbies() {
@@ -128,6 +158,10 @@ class CronService {
 			this.lastCleanupAt = now.getTime();
 			tasks.push(this.cleanupAbandonedLobbies());
 		}
+		if (now.getTime() - this.lastTorRefreshAt >= this.torRefreshIntervalMs) {
+			this.lastTorRefreshAt = now.getTime();
+			tasks.push(this.refreshTorNodes());
+		}
 		return Promise.allSettled(tasks);
 	}
 
@@ -136,11 +170,14 @@ class CronService {
 		this.isRunning = true;
 		this.runScheduledTasks();
 		this.cronHandle = setInterval(() => this.runScheduledTasks(), this.cronIntervalMs);
+		this.archivalHandle = setInterval(() => this.archiveCompletedGames(), this.archivalIntervalMs);
 	}
 
 	stop() {
 		if (this.cronHandle) clearInterval(this.cronHandle);
+		if (this.archivalHandle) clearInterval(this.archivalHandle);
 		this.cronHandle = null;
+		this.archivalHandle = null;
 		this.isRunning = false;
 	}
 
@@ -149,6 +186,9 @@ class CronService {
 			isRunning: this.isRunning,
 			intervalMs: this.cronIntervalMs,
 			cleanupThresholdHours: this.cleanupThresholdHours,
+			archivalIntervalMs: this.archivalIntervalMs,
+			archivalAgeDays: this.archivalAgeDays,
+			torRefreshIntervalMs: this.torRefreshIntervalMs,
 		};
 	}
 
@@ -159,129 +199,6 @@ class CronService {
 	setCleanupThreshold(hours) {
 		this.cleanupThresholdHours = hours;
 	}
-const archivalService = require("./archivalService");
-
-class CronService {
-  constructor() {
-    this.isRunning = false;
-    this.cronIntervalMs = 60 * 60 * 1000;
-    this.cleanupThresholdHours = 24;
-    this.cronHandle = null;
-    this.archivalIntervalMs = 7 * 24 * 60 * 60 * 1000;
-    this.archivalAgeDays = 90;
-    this.archivalHandle = null;
-  }
-
-  async archiveCompletedGames() {
-    const cutoffDate = new Date(Date.now() - this.archivalAgeDays * 24 * 60 * 60 * 1000);
-    try {
-      return await archivalService.archiveOldGames(cutoffDate);
-    } catch (error) {
-      console.error("[CronService] Game archival failed:", error.message);
-      return { success: false, error: error.message };
-    }
-  }
-
-  async cleanupAbandonedLobbies() {
-    try {
-      const thresholdTime = new Date(Date.now() - this.cleanupThresholdHours * 60 * 60 * 1000).toISOString();
-
-      const { data: expiredGames, error: fetchError } = await supabase
-        .from("games")
-        .select("id, game_code, created_at")
-        .eq("status", "waiting")
-        .lt("created_at", thresholdTime)
-        .limit(100);
-
-      if (fetchError) {
-        console.error("[CronService] Error fetching expired games:", fetchError.message);
-        return { success: false, error: fetchError.message };
-      }
-
-      if (!expiredGames || expiredGames.length === 0) {
-        console.log("[CronService] No abandoned lobbies found to clean up");
-        return { success: true, cleaned: 0 };
-      }
-
-      const gameIds = expiredGames.map(g => g.id);
-      const { error: updateError } = await supabase
-        .from("games")
-        .update({ status: "expired" })
-        .in("id", gameIds);
-
-      if (updateError) {
-        console.error("[CronService] Error marking games as expired:", updateError.message);
-        return { success: false, error: updateError.message };
-      }
-
-      console.log(`[CronService] Successfully cleaned up ${expiredGames.length} abandoned lobbies (older than ${this.cleanupThresholdHours} hours)`);
-      return { success: true, cleaned: expiredGames.length };
-    } catch (error) {
-      console.error("[CronService] Unexpected error during cleanup:", error.message);
-      return { success: false, error: error.message };
-    }
-  }
-
-  start() {
-    if (this.isRunning) {
-      console.log("[CronService] Cron job is already running");
-      return;
-    }
-
-    this.isRunning = true;
-    console.log(`[CronService] Starting automated cleanup cron (interval: ${this.cronIntervalMs / 1000 / 60} minutes)`);
-
-    this.cleanupAbandonedLobbies();
-    this.archiveCompletedGames();
-
-    this.cronHandle = setInterval(() => {
-      this.cleanupAbandonedLobbies();
-    }, this.cronIntervalMs);
-    this.archivalHandle = setInterval(() => {
-      this.archiveCompletedGames();
-    }, this.archivalIntervalMs);
-  }
-
-  stop() {
-    if (!this.isRunning) {
-      console.log("[CronService] Cron job is not running");
-      return;
-    }
-
-    if (this.cronHandle) {
-      clearInterval(this.cronHandle);
-      this.cronHandle = null;
-    }
-    if (this.archivalHandle) {
-      clearInterval(this.archivalHandle);
-      this.archivalHandle = null;
-    }
-
-    this.isRunning = false;
-    console.log("[CronService] Stopped automated cleanup cron");
-  }
-
-  getStatus() {
-    return {
-      isRunning: this.isRunning,
-      intervalMs: this.cronIntervalMs,
-      cleanupThresholdHours: this.cleanupThresholdHours,
-      archivalIntervalMs: this.archivalIntervalMs,
-      archivalAgeDays: this.archivalAgeDays,
-    };
-  }
-
-  setCleanupInterval(intervalMs) {
-    this.cronIntervalMs = intervalMs;
-    if (this.isRunning) {
-      this.stop();
-      this.start();
-    }
-  }
-
-  setCleanupThreshold(hours) {
-    this.cleanupThresholdHours = hours;
-  }
 }
 
 module.exports = new CronService();

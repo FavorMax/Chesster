@@ -248,6 +248,63 @@ export function replayPgn(sanMoves: string[]): ReplayedMove[] {
 	return moves;
 }
 
+/** A single game extracted from a PGN file, with its own header tags. */
+export interface PgnGameText {
+	headers: Record<string, string>;
+	pgn: string;
+}
+
+/**
+ * Splits a PGN file that may contain several games into individual games.
+ *
+ * A new game starts at the first header line that appears after movetext
+ * (the Seven Tag Roster separates games in multi-game collections, but
+ * robustly detecting any header line following movetext also handles files
+ * with sparse headers). A file with a single game — or plain movetext with
+ * no headers at all — yields a one-element array.
+ *
+ * Used by the Analysis page drag-and-drop uploader (#318) to offer a game
+ * selector when a collection file is dropped.
+ */
+export function splitPgnGames(pgnText: string): PgnGameText[] {
+	const headerRegex = /^\s*\[(\w+)\s+"([^"]*)"\]\s*$/gm;
+	const headerRanges: { start: number; end: number }[] = [];
+	let match: RegExpExecArray | null;
+	while ((match = headerRegex.exec(pgnText))) {
+		headerRanges.push({ start: match.index, end: match.index + match[0].length });
+	}
+
+	// No headers at all: treat the whole text as one movetext-only game.
+	if (headerRanges.length === 0) {
+		const trimmed = pgnText.trim();
+		return trimmed ? [{ headers: {}, pgn: trimmed }] : [];
+	}
+
+	// Game boundaries: the first header, plus every header line preceded by
+	// non-whitespace text (i.e. the previous game's movetext).
+	const boundaries: number[] = [headerRanges[0].start];
+	for (let i = 1; i < headerRanges.length; i++) {
+		const between = pgnText.slice(headerRanges[i - 1].end, headerRanges[i].start);
+		if (/\S/.test(between)) boundaries.push(headerRanges[i].start);
+	}
+
+	const games: PgnGameText[] = [];
+	for (let i = 0; i < boundaries.length; i++) {
+		const segment = pgnText
+			.slice(boundaries[i], i + 1 < boundaries.length ? boundaries[i + 1] : undefined)
+			.trim();
+		if (!segment) continue;
+		const headers: Record<string, string> = {};
+		const segHeaderRegex = /^\s*\[(\w+)\s+"([^"]*)"\]\s*$/gm;
+		let headerMatch: RegExpExecArray | null;
+		while ((headerMatch = segHeaderRegex.exec(segment))) {
+			headers[headerMatch[1]] = headerMatch[2];
+		}
+		games.push({ headers, pgn: segment });
+	}
+	return games;
+}
+
 /** Convenience wrapper: parse + replay a full PGN string in one call. */
 export function loadPgn(pgnText: string): {
 	headers: Record<string, string>;
