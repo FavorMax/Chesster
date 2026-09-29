@@ -5,7 +5,7 @@ import { useGameStore } from "../store/gameStore";
 import { useToastStore } from "../store/toastStore";
 import { useWalletStore } from "../store/walletStore";
 import { api } from "../api/gameApi";
-import { Clock, Users, ChevronRight, Trophy, Share2, Copy, Check } from "lucide-react";
+import { Clock, Users, ChevronRight, Trophy, BarChart3, Share2, Copy, Check } from "lucide-react";
 import { depositXLM } from "../services/stellarService";
 import WalletDropdown from "./WalletDropdown";
 import { getTimeCategory, isValidTimeControl } from "../utils/timeControl";
@@ -248,7 +248,7 @@ function ShareMatchModal({
 		if (!shareLink) return;
 		let active = true;
 		QRCode.toDataURL(shareLink, { width: 220, margin: 1 })
-			.then((url) => {
+			.then((url: string) => {
 				if (active) setQrDataUrl(url);
 			})
 			.catch(() => {
@@ -669,6 +669,13 @@ export default function GameLobby() {
 						>
 							<Trophy size={14} className="text-(--accent-primary)" />
 							Tournaments
+						</button>
+						<button
+							onClick={() => navigate("/leaderboard")}
+							className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold text-(--text-secondary) hover:text-(--text) hover:bg-(--bg-tertiary) transition-colors"
+							>
+							<BarChart3 size={14} className="text-(--accent-primary)" />
+							Leaderboard
 						</button>
 					</nav>
 				</div>

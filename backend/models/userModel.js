@@ -7,6 +7,8 @@ const REFERRAL_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function generateReferralCode() {
 	const bytes = crypto.randomBytes(8);
 	return Array.from(bytes, (byte) => REFERRAL_ALPHABET[byte % REFERRAL_ALPHABET.length]).join("");
+}
+
 const { getRedisClient } = require("../config/redis");
 
 // Profiles only change when a match ends or the owner edits them, so they
@@ -127,6 +129,8 @@ class UserModel {
 			.maybeSingle();
 		if (error) throw error;
 		return data || this.getByAddress(address);
+	}
+
 	/**
 	 * Public profile with aggregated match statistics and recent matches,
 	 * served from Redis (`cache:profile:<address>`) when possible. Any Redis

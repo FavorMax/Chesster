@@ -1,3 +1,102 @@
+# [1.33.0](https://github.com/Kaycee276/Chesster/compare/v1.32.0...v1.33.0) (2026-09-28)
+
+
+### Features
+
+* **contracts,ci:** bound stale match GC batches and pin GitHub Actions to commit SHAs (closes [#379](https://github.com/Kaycee276/Chesster/issues/379), closes [#380](https://github.com/Kaycee276/Chesster/issues/380)) ([2293056](https://github.com/Kaycee276/Chesster/commit/229305637594b42dd4ef394ef5abca1b0bf4aead))
+
+# [1.32.0](https://github.com/Kaycee276/Chesster/compare/v1.31.0...v1.32.0) (2026-09-28)
+
+
+### Features
+
+* **frontend:** Create Interactive Tree Tournament Bracket Component with Live Match Links ([cf9308b](https://github.com/Kaycee276/Chesster/commit/cf9308bb893cb5cfaf28f5eb67fa33f2777d7f9a)), closes [#229](https://github.com/Kaycee276/Chesster/issues/229)
+
+# [1.31.0](https://github.com/Kaycee276/Chesster/compare/v1.30.0...v1.31.0) (2026-09-28)
+
+
+### Features
+
+* **frontend:** add keyboard move input, leaderboard filters, disconnect banner, and PGN drag-and-drop ([197b889](https://github.com/Kaycee276/Chesster/commit/197b8891bbf3e7293d31526c8b0e60786278337b)), closes [#315](https://github.com/Kaycee276/Chesster/issues/315) [#316](https://github.com/Kaycee276/Chesster/issues/316) [#317](https://github.com/Kaycee276/Chesster/issues/317) [#318](https://github.com/Kaycee276/Chesster/issues/318)
+
+# [1.30.0](https://github.com/Kaycee276/Chesster/compare/v1.29.0...v1.30.0) (2026-09-28)
+
+
+### Bug Fixes
+
+* **contracts:** reconcile EscrowError limits and format after upstream merge ([be8785a](https://github.com/Kaycee276/Chesster/commit/be8785a4b9d07e54dbd518df43c7dfd33c00f699))
+
+
+### Features
+
+* **contracts:** add escrow emergency drain safe-harbor with timelock delay ([f700309](https://github.com/Kaycee276/Chesster/commit/f700309c5adb0f98b98fa66cd403db440aefabd4))
+* **frontend:** add streamer mode with hidden balances ([26215f0](https://github.com/Kaycee276/Chesster/commit/26215f0621178fb723988c9637997f057751fbbb))
+* **frontend:** build live streamer mode with hidden wager balances, address masking, enlarged board coordinates, and stream overlay route ([8d7ef6c](https://github.com/Kaycee276/Chesster/commit/8d7ef6cfbc834c4fa66919386ed071f479d87543))
+* **frontend:** Implement Multi-Language Internationalization (i18n) Framework (EN, ES, FR, ZH) ([cddc5c0](https://github.com/Kaycee276/Chesster/commit/cddc5c0daa9b42c669016560587bc8f45cfe4549))
+
+# [1.29.0](https://github.com/Kaycee276/Chesster/compare/v1.28.0...v1.29.0) (2026-09-27)
+
+
+### Features
+
+* **security,testing:** sanitize chat XSS, rate-limit and sanitize API inputs, add frontend unit tests ([3557f66](https://github.com/Kaycee276/Chesster/commit/3557f66d096cec22f2bc14fffd31a532d56e0698))
+
+# [1.28.0](https://github.com/Kaycee276/Chesster/compare/v1.27.0...v1.28.0) (2026-09-27)
+
+
+### Features
+
+* **security:** resolve multiple assigned security tasks (closes [#323](https://github.com/Kaycee276/Chesster/issues/323), closes [#324](https://github.com/Kaycee276/Chesster/issues/324), closes [#325](https://github.com/Kaycee276/Chesster/issues/325), closes [#326](https://github.com/Kaycee276/Chesster/issues/326)) ([d05e842](https://github.com/Kaycee276/Chesster/commit/d05e842c69213d89f331af4530f885186fa304ce))
+
+# [1.27.0](https://github.com/Kaycee276/Chesster/compare/v1.26.0...v1.27.0) (2026-09-27)
+
+
+### Features
+
+* **backend:** Implement Real-Time Socket.io Tournament Lifecycle Events ([8d40f80](https://github.com/Kaycee276/Chesster/commit/8d40f80de44653664e82450e121732fd548adb73))
+
+# [1.26.0](https://github.com/Kaycee276/Chesster/compare/v1.25.0...v1.26.0) (2026-09-27)
+
+
+### Features
+
+* **db:** [#319](https://github.com/Kaycee276/Chesster/issues/319) player_rating_history table, [#320](https://github.com/Kaycee276/Chesster/issues/320) referral_program and claimable_commission_ledger tables ([db5d00c](https://github.com/Kaycee276/Chesster/commit/db5d00c41ccb4f0ccded0b0e372d0fc37112c344))
+
+# [1.25.0](https://github.com/Kaycee276/Chesster/compare/v1.24.0...v1.25.0) (2026-09-27)
+
+
+### Bug Fixes
+
+* correct workspace CI dependency paths ([99c6f5f](https://github.com/Kaycee276/Chesster/commit/99c6f5f627b10b4a747c098feb0526025926fb88))
+
+
+### Features
+
+* **backend:** Implement Distributed Lock for Move Submission using Redis Redlock - Closes [#239](https://github.com/Kaycee276/Chesster/issues/239) ([75d8595](https://github.com/Kaycee276/Chesster/commit/75d859539ce4da4cb959593a81f0e6ba6269d4cb))
+* **backend:** Implement Redis Adapter for Socket.io Clustering & Horizontal Scaling - Closes [#238](https://github.com/Kaycee276/Chesster/issues/238) ([99707a0](https://github.com/Kaycee276/Chesster/commit/99707a0af4b63ea07e07b6ac9d3246004d464240))
+* **backend:** Implement WebSocket Latency Telemetry and Automatic Disconnect Grace Period - Closes [#240](https://github.com/Kaycee276/Chesster/issues/240) ([9013e8f](https://github.com/Kaycee276/Chesster/commit/9013e8f7131a3ad29a4d716f80a532998d5d1fcb))
+* **contracts:** Add On-Chain Event Emitting for Player Win Streak & Trophy Milestones - Closes [#237](https://github.com/Kaycee276/Chesster/issues/237) ([fbdb3ea](https://github.com/Kaycee276/Chesster/commit/fbdb3ea99636c8465445af07ee9c7af85b202185))
+
+# [1.24.0](https://github.com/Kaycee276/Chesster/compare/v1.23.0...v1.24.0) (2026-09-27)
+
+
+### Bug Fixes
+
+* **contracts:** reconcile EscrowError limits and format after upstream merge ([40dc134](https://github.com/Kaycee276/Chesster/commit/40dc134fcd3e60d1ce1276475d7cf9ca80afc4b6))
+* **contracts:** repair escrow test boundaries ([e6119ab](https://github.com/Kaycee276/Chesster/commit/e6119ab1d5f10ed13c8ecd979f83716197d6feba))
+* **escrow:** resolve clippy warnings and update wasm size budget limit ([8b66ec1](https://github.com/Kaycee276/Chesster/commit/8b66ec1363eb62eecb8a7a4d3e41d181b5329468))
+* repair corrupted ChessBoard and GameResultModal components ([e20b18d](https://github.com/Kaycee276/Chesster/commit/e20b18debb1f3c3d929ced4a78454d7a6769e798))
+
+
+### Features
+
+* add share match link QR code to game lobby ([44de0ef](https://github.com/Kaycee276/Chesster/commit/44de0ef1e1d3bc0e6182e631b4f6185556a31a99))
+* **contracts,backend:** implement escrow features for issues [#287](https://github.com/Kaycee276/Chesster/issues/287), [#288](https://github.com/Kaycee276/Chesster/issues/288), [#289](https://github.com/Kaycee276/Chesster/issues/289), and [#290](https://github.com/Kaycee276/Chesster/issues/290) ([4e35ce1](https://github.com/Kaycee276/Chesster/commit/4e35ce17a5416b47c3be1f8233a0bd080a8a05ff))
+* **contracts:** add multi-sig emergency admin recovery scheme ([e9264aa](https://github.com/Kaycee276/Chesster/commit/e9264aa48e9859da9125ad2921a37249cd73c908))
+* **contracts:** implement dynamic platform fee discount for staked token holders ([efda452](https://github.com/Kaycee276/Chesster/commit/efda452d67933e78d6058b61b36a90b529d4ef22))
+* **database:** implement puzzles schema, seed script, and atomic escrow settle procedure (closes [#321](https://github.com/Kaycee276/Chesster/issues/321), closes [#322](https://github.com/Kaycee276/Chesster/issues/322)) ([c758713](https://github.com/Kaycee276/Chesster/commit/c758713dec9cea5824382c23b30e12553e7a5c7a))
+* show wallet XLM/SAC balances in the navbar ([67e389a](https://github.com/Kaycee276/Chesster/commit/67e389a2af87078b94e544016b8e5ce27b65df9f))
+
 # [1.23.0](https://github.com/Kaycee276/Chesster/compare/v1.22.0...v1.23.0) (2026-09-26)
 
 
