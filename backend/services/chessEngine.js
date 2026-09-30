@@ -424,6 +424,46 @@ class ChessEngine {
     return { board, currentColor, moveCount, fullmoveNumber };
   }
 
+  getVisibleSquares(board, viewerColor) {
+    const visible = new Set();
+    const own = (piece) => piece !== '.' && (viewerColor === 'white' ? piece === piece.toUpperCase() : piece === piece.toLowerCase());
+    const add = (row, col) => { if (row >= 0 && row < 8 && col >= 0 && col < 8) visible.add(`${row},${col}`); };
+    for (let row = 0; row < 8; row += 1) for (let col = 0; col < 8; col += 1) {
+      if (!own(board[row][col])) continue;
+      add(row, col);
+      const piece = board[row][col].toLowerCase();
+      const directions = piece === 'n' ? [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]
+        : piece === 'k' ? [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]
+        : piece === 'b' ? [[-1,-1],[-1,1],[1,-1],[1,1]]
+        : piece === 'r' ? [[-1,0],[1,0],[0,-1],[0,1]]
+        : piece === 'q' ? [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]
+        : [[viewerColor === 'white' ? -1 : 1, -1], [viewerColor === 'white' ? -1 : 1, 1]];
+      for (const [dr, dc] of directions) {
+        let nextRow = row + dr; let nextCol = col + dc;
+        do {
+          add(nextRow, nextCol);
+          if (piece === 'n' || piece === 'k' || piece === 'p' || (nextRow >= 0 && nextRow < 8 && nextCol >= 0 && nextCol < 8 && board[nextRow][nextCol] !== '.')) break;
+          nextRow += dr; nextCol += dc;
+        } while (nextRow >= 0 && nextRow < 8 && nextCol >= 0 && nextCol < 8);
+      }
+    }
+    return visible;
+  }
+
+  generateFogOfWarFen(board, viewerColor = 'white', turn = viewerColor, moveCount = 0, fullmoveNumber = 1) {
+    const visible = this.getVisibleSquares(board, viewerColor);
+    const masked = board.map((row, r) => row.map((piece, c) => visible.has(`${r},${c}`) ? piece : '.'));
+    return this.boardToFen(masked, turn, moveCount, fullmoveNumber);
+  }
+
+  isValidVariantMove(board, from, to, turn, variant = 'standard', lastMove = null) {
+    if (!['blindfold', 'fog_of_war'].includes(variant)) return this.isValidMove(board, from, to, turn, lastMove);
+    const target = board[to[0]][to[1]];
+    const isEnemyKing = target && target.toLowerCase() === 'k' && ((turn === 'white' && target === 'k') || (turn === 'black' && target === 'K'));
+    const result = this.isValidMove(board, from, to, turn, lastMove);
+    return isEnemyKing && result.valid ? { ...result, kingCaptured: true } : result;
+  }
+
   /**
    * Generate SAN (Standard Algebraic Notation) for a move
    * @param {Array} board - Current board state

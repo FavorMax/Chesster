@@ -100,10 +100,12 @@ class GameModel {
 	) {
 		if (!gameCode) gameCode = this.generateGameCode();
 		const initialBoard = chessEngine.initBoard();
+		const variant = ["standard", "blindfold", "fog_of_war"].includes(gameType) ? gameType : "standard";
 
 		const insertPayload = {
 			game_code: gameCode,
 			game_type: gameType,
+			variant,
 			board_state: initialBoard,
 			current_turn: "white",
 			status: "waiting",
@@ -539,11 +541,12 @@ class GameModel {
 
 		if (game.status !== "active") throw new Error("Game not active");
 
-		const validation = chessEngine.isValidMove(
+		const validation = chessEngine.isValidVariantMove(
 			game.board_state,
 			from,
 			to,
 			game.current_turn,
+			game.variant || game.game_type,
 			game.last_move,
 		);
 		if (!validation.valid) throw new Error(validation.reason || "Invalid move");
