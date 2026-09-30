@@ -186,6 +186,8 @@ router.post('/games/:gameCode/move', gameController.makeMove);
  */
 router.get('/games/:gameCode/moves', gameController.getMoves);
 
+router.get('/games/:gameCode/pgn', gameController.exportPgn);
+
 /**
  * @openapi
  * /api/games/{gameCode}/resign:
