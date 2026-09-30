@@ -617,7 +617,7 @@ class ChessEngine {
       if (index % 2 === 0) tokens.push(`${Math.floor(index / 2) + 1}.`);
       const san = this.moveToSan(board, move.from || move.from_position, move.to || move.to_position, move.promotion);
       const annotations = [];
-      const clockSeconds = move.clockSeconds ?? move.remainingSeconds ?? move.clock_seconds ?? move.remaining_seconds;
+      const clockSeconds = move.clockSeconds ?? move.remainingSeconds ?? move.clock_seconds ?? move.remaining_seconds ?? metadata.initialClockSeconds;
       if (Number.isFinite(Number(clockSeconds))) annotations.push(`[%clk ${this.formatPgnClock(Number(clockSeconds))}]`);
       const evaluationCp = move.evaluationCp ?? move.centipawns ?? move.evaluation_cp;
       if (Number.isFinite(Number(evaluationCp))) annotations.push(`[%eval ${(Number(evaluationCp) / 100).toFixed(2)}]`);

@@ -179,6 +179,7 @@ class GameController {
 				result: game.winner === "draw" ? "1/2-1/2" : game.winner === "white" ? "1-0" : game.winner === "black" ? "0-1" : "*",
 				termination: game.end_reason || "normal",
 				timeControl: game.time_control_seconds ? String(game.time_control_seconds) : "-",
+				initialClockSeconds: game.time_control_seconds || null,
 				createdAt: game.created_at,
 			});
 			res.set({
