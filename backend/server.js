@@ -15,6 +15,7 @@ const botRoutes = require("./routes/botRoutes");
 const healthRoutes = require("./routes/healthRoutes");
 const referralRoutes = require("./routes/referralRoutes");
 const puzzleRoutes = require("./routes/puzzleRoutes");
+const chessEngine = require("./services/chessEngine");
 const timerService = require("./services/timerService");
 const cronService = require("./services/cronService");
 const eventConsumer = require("./workers/eventConsumer");
@@ -22,7 +23,6 @@ const supabase = require("./config/supabase");
 const logger = require("./utils/logger");
 const { errorHandler, installGlobalHandlers } = require("./middleware/errorHandler");
 const { enforceHttps, enforceSecureSocket } = require("./middleware/enforceHttps");
-const { moderateMessage } = require("./services/chatService");
 const gameModel = require("./models/gameModel");
 const {
   verifySocketToken,
@@ -195,16 +195,31 @@ function broadcastPresence(gameCode, color, status) {
   io.to(gameCode).emit("presence-update", { gameCode, color, status });
 }
 
+function maskGameForViewer(game, playerColor) {
+  if (!game || !['blindfold', 'fog_of_war'].includes(game.variant || game.game_type)) return game;
+  const board = Array.isArray(game.board_state) ? game.board_state : null;
+  if (!board) return game;
+  return { ...game, board_state: undefined, fen: chessEngine.generateFogOfWarFen(board, playerColor, game.current_turn) };
+}
+
+function broadcastGameUpdate(gameCode, game) {
+  const room = io.sockets.adapter.rooms.get(gameCode);
+  if (!room) return;
+  for (const socketId of room) {
+    const target = io.sockets.sockets.get(socketId);
+    const color = target?.data?.playerColor;
+    target?.emit("game-update", maskGameForViewer(game, color || "white"));
+  }
+}
+
 io.on("connection", (socket) => {
   // Accepts either a bare gameCode string (spectator join) or
   // { gameCode, playerColor } so we can track presence / handle reconnects.
-  socket.on("join-game", async (payload) => {
-    const gameCode = typeof payload === "string" ? payload : payload?.gameCode;
-    const requestedColor = typeof payload === "object" ? payload?.playerColor : null;
-    const token = typeof payload === "object" ? payload?.token : null;
-  socket.on("join-game", validateSocketPayload(JoinRoomPayload, (payload) => {
+  socket.on("join-game", validateSocketPayload(JoinRoomPayload, async (payload) => {
     const gameCode = typeof payload === "string" ? payload : payload?.gameCode || payload?.gameId;
     const playerColor = typeof payload === "object" ? payload?.playerColor : null;
+    const requestedColor = playerColor;
+    const token = typeof payload === "object" ? payload?.token : null;
     if (!gameCode) return;
 
     socket.join(gameCode);
@@ -297,7 +312,7 @@ io.on("connection", (socket) => {
         timerService.clearClock(gameCode);
       }
 
-      io.to(gameCode).emit("game-update", { ...updated, clock });
+      broadcastGameUpdate(gameCode, { ...updated, clock });
     } catch (err) {
       socket.emit("move-rejected", { gameCode, reason: "invalid-move", message: err.message });
     }
@@ -454,7 +469,9 @@ io.on("connection", (socket) => {
       // ── 9. Build atomic rehydration payload ────────────────────────
       const rehydratePayload = {
         gameId,
-        fen: game.board_state, // FEN representation
+        fen: ['blindfold', 'fog_of_war'].includes(game.variant || game.game_type)
+          ? chessEngine.generateFogOfWarFen(game.board_state, playerColor, game.current_turn)
+          : game.board_state, // FEN representation
         moveHistory: moves.map(m => ({
           from: m.from_position,
           to: m.to_position,
