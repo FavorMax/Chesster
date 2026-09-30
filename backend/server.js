@@ -15,6 +15,7 @@ const botRoutes = require("./routes/botRoutes");
 const healthRoutes = require("./routes/healthRoutes");
 const referralRoutes = require("./routes/referralRoutes");
 const puzzleRoutes = require("./routes/puzzleRoutes");
+const metricsRoutes = require("./routes/metricsRoutes");
 const timerService = require("./services/timerService");
 const cronService = require("./services/cronService");
 const eventConsumer = require("./workers/eventConsumer");
@@ -22,7 +23,6 @@ const supabase = require("./config/supabase");
 const logger = require("./utils/logger");
 const { errorHandler, installGlobalHandlers } = require("./middleware/errorHandler");
 const { enforceHttps, enforceSecureSocket } = require("./middleware/enforceHttps");
-const { moderateMessage } = require("./services/chatService");
 const gameModel = require("./models/gameModel");
 const {
   verifySocketToken,
@@ -162,6 +162,7 @@ app.use("/api", botRoutes);
 app.use("/api", healthRoutes);
 app.use("/api/referrals", referralRoutes);
 app.use("/api/puzzles", puzzleRoutes);
+app.use(metricsRoutes);
 
 // Legacy health endpoint
 app.get("/health", (req, res) => {
@@ -196,18 +197,18 @@ function broadcastPresence(gameCode, color, status) {
 }
 
 io.on("connection", (socket) => {
+  metricsRoutes.setConnectedClients(io.engine.clientsCount);
   // Accepts either a bare gameCode string (spectator join) or
   // { gameCode, playerColor } so we can track presence / handle reconnects.
-  socket.on("join-game", async (payload) => {
-    const gameCode = typeof payload === "string" ? payload : payload?.gameCode;
-    const requestedColor = typeof payload === "object" ? payload?.playerColor : null;
-    const token = typeof payload === "object" ? payload?.token : null;
-  socket.on("join-game", validateSocketPayload(JoinRoomPayload, (payload) => {
+  socket.on("join-game", validateSocketPayload(JoinRoomPayload, async (payload) => {
     const gameCode = typeof payload === "string" ? payload : payload?.gameCode || payload?.gameId;
     const playerColor = typeof payload === "object" ? payload?.playerColor : null;
+    const requestedColor = playerColor;
+    const token = typeof payload === "object" ? payload?.token : null;
     if (!gameCode) return;
 
     socket.join(gameCode);
+    metricsRoutes.markGameConnected(gameCode);
 
     if (requestedColor && ["white", "black"].includes(requestedColor)) {
       // Server authority: a socket may only be bound to a player color if a
@@ -270,6 +271,7 @@ io.on("connection", (socket) => {
   // player's turn in an active game; otherwise it is rejected without touching
   // game state. This blocks socket injection and client-side move spoofing.
   socket.on("make-move", async ({ gameCode, from, to, promotion } = {}) => {
+    const moveStartedAt = Date.now();
     if (!gameCode) return;
 
     const boundColor = socket.data.playerColor;
@@ -288,6 +290,7 @@ io.on("connection", (socket) => {
 
       const moverColor = game.current_turn;
       const updated = await gameModel.makeMove(gameCode, from, to, promotion);
+      metricsRoutes.observeMoveLatency(moveStartedAt);
 
       let clock = null;
       if (updated.status === "active") {
@@ -332,6 +335,8 @@ io.on("connection", (socket) => {
   }));
 
   socket.on("disconnect", async () => {
+    metricsRoutes.setConnectedClients(io.engine.clientsCount);
+    metricsRoutes.markGameDisconnected(socket.data?.gameCode);
     const { gameCode, playerColor } = socket.data || {};
     if (!gameCode || !playerColor) return;
 
