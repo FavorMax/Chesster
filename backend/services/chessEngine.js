@@ -591,6 +591,49 @@ class ChessEngine {
   }
 
   /**
+   * Generate a standards-compatible PGN with clock and engine annotations.
+   * Move rows may provide `clockSeconds`/`remainingSeconds` and
+   * `evaluationCp`/`centipawns`; missing telemetry is intentionally omitted.
+   */
+  generateRichPgn(moves = [], metadata = {}) {
+    const headers = {
+      Event: metadata.event || "Chesster Game",
+      Site: metadata.site || "Chesster",
+      Date: metadata.date || (metadata.createdAt ? String(metadata.createdAt).slice(0, 10).replaceAll("-", ".") : "????.??.??"),
+      Round: metadata.round || "-",
+      White: metadata.white || "?",
+      Black: metadata.black || "?",
+      Result: metadata.result || "*",
+      TimeControl: metadata.timeControl || "-",
+      Termination: metadata.termination || "normal",
+    };
+    const tagText = Object.entries(headers)
+      .map(([name, value]) => `[${name} "${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"]`)
+      .join("\n");
+    let board = (metadata.startBoard || this.initBoard()).map((row) => [...row]);
+    const tokens = [];
+    for (let index = 0; index < moves.length; index += 1) {
+      const move = moves[index];
+      if (index % 2 === 0) tokens.push(`${Math.floor(index / 2) + 1}.`);
+      const san = this.moveToSan(board, move.from || move.from_position, move.to || move.to_position, move.promotion);
+      const annotations = [];
+      const clockSeconds = move.clockSeconds ?? move.remainingSeconds ?? move.clock_seconds ?? move.remaining_seconds;
+      if (Number.isFinite(Number(clockSeconds))) annotations.push(`[%clk ${this.formatPgnClock(Number(clockSeconds))}]`);
+      const evaluationCp = move.evaluationCp ?? move.centipawns ?? move.evaluation_cp;
+      if (Number.isFinite(Number(evaluationCp))) annotations.push(`[%eval ${(Number(evaluationCp) / 100).toFixed(2)}]`);
+      tokens.push(`${san}${annotations.length ? ` {${annotations.join(" ")}}` : ""}`);
+      board = this.makeMove(board, move.from || move.from_position, move.to || move.to_position, move.promotion);
+    }
+    tokens.push(headers.Result);
+    return `${tagText}\n\n${tokens.join(" ").trim()}\n`;
+  }
+
+  formatPgnClock(seconds) {
+    const total = Math.max(0, Math.floor(seconds));
+    return `${Math.floor(total / 3600)}:${String(Math.floor((total % 3600) / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  }
+
+  /**
    * Build a simplified position key used for repetition detection.
    * Includes piece placement, active turn, castling rights and en passant
    * target (the first four space-separated FEN fields) but deliberately
