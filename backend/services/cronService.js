@@ -2,6 +2,7 @@ const supabase = require("../config/supabase");
 const notificationService = require("./notificationService");
 const archivalService = require("./archivalService");
 const { refreshTorExitList } = require("../middlewares/proxyDetection");
+const eloService = require("./eloService");
 
 class CronService {
 	constructor({ db = supabase, notifications = notificationService, archival = archivalService } = {}) {
@@ -64,6 +65,20 @@ class CronService {
 		} catch (error) {
 			return { success: false, error: error.message };
 		}
+	}
+
+	async decayInactiveRatingDeviation(now = new Date()) {
+		const cutoff = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString();
+		const { data: players, error } = await this.db.from("players")
+			.select("wallet_address, elo_rating, rating_deviation, volatility, updated_at")
+			.lt("updated_at", cutoff).limit(500);
+		if (error) return { success: false, error: error.message };
+		for (const player of players || []) {
+			const inactiveSeconds = Math.max(0, (now.getTime() - new Date(player.updated_at).getTime()) / 1000);
+			const next = eloService.inflateRatingDeviation(player, inactiveSeconds);
+			await this.db.from("players").update({ rating_deviation: next.ratingDeviation }).eq("wallet_address", player.wallet_address);
+		}
+		return { success: true, updated: (players || []).length };
 	}
 
 	async getTournamentReminders(minutes, now = new Date()) {
@@ -154,6 +169,7 @@ class CronService {
 			this.dispatchTournamentReminders(5, now),
 			this.dispatchWinnerAnnouncements(now),
 		];
+		tasks.push(this.decayInactiveRatingDeviation(now));
 		if (now.getTime() - this.lastCleanupAt >= this.cleanupIntervalMs) {
 			this.lastCleanupAt = now.getTime();
 			tasks.push(this.cleanupAbandonedLobbies());
